@@ -207,11 +207,12 @@ if registrar:
 
                 msg = (
                     f"SGD {valor:,.0f} em **{chave}** registrado!\n\n"
-                    f"Gasto no mes: SGD {s['gasto']:,.0f} ({perc_gasto:.1f}%) — "
-                    f"Ainda disponivel: SGD {resta:,.0f} ({perc_resta:.1f}%)"
+                    f"Com o gasto de SGD {valor:,.0f}, você terá **SGD {max(resta,0):,.0f}** "
+                    f"para gastar esse mês ({perc_resta:.1f}% do disponível de SGD {s['disponivel']:,.0f})"
+                    f" e **SGD {s['saldo_ano']:,.0f}** esse ano."
                 )
                 if s["saldo_anterior"] != 0:
-                    msg += f"\n\nSaldo acumulado de meses anteriores: SGD {s['saldo_anterior']:,.0f}."
+                    msg += f"\n\nRollover de meses anteriores: SGD {s['saldo_anterior']:,.0f}."
 
                 st.session_state.feedback_msg = msg
                 st.session_state.feedback_cor = "error" if resta < 0 else ("warning" if perc_gasto > 80 else "success")

@@ -92,16 +92,30 @@ def delete_lancamentos(ids):
 # ── CONSULTA DE SALDO ─────────────────────────────────────────────────────
 def get_consulta_saldo(categoria, item, nro_mes, ano):
     item_q = item if item else None
-    orcado    = query_df("SELECT COALESCE(SUM(valor),0) AS v FROM orcamento WHERE tipo=%s AND (item=%s OR item IS NULL) AND nro_mes=%s AND ano=%s", [categoria,item_q,nro_mes,ano])["v"].values[0]
-    gasto     = query_df("SELECT COALESCE(SUM(valor),0) AS v FROM lancamentos WHERE tipo_geral='Saida' AND categoria=%s AND (item=%s OR item IS NULL) AND nro_mes=%s AND ano=%s", [categoria,item_q,nro_mes,ano])["v"].values[0]
-    gasto_ant = query_df("SELECT COALESCE(SUM(valor),0) AS v FROM lancamentos WHERE tipo_geral='Saida' AND categoria=%s AND (item=%s OR item IS NULL) AND nro_mes<%s AND ano=%s", [categoria,item_q,nro_mes,ano])["v"].values[0]
+
+    # Orçamento do mês atual
+    orcado = query_df("SELECT COALESCE(SUM(valor),0) AS v FROM orcamento WHERE tipo=%s AND (item=%s OR item IS NULL) AND nro_mes=%s AND ano=%s", [categoria,item_q,nro_mes,ano])["v"].values[0]
+
+    # Gasto no mês atual
+    gasto = query_df("SELECT COALESCE(SUM(valor),0) AS v FROM lancamentos WHERE tipo_geral='Saida' AND categoria=%s AND nro_mes=%s AND ano=%s", [categoria,nro_mes,ano])["v"].values[0]
+
+    # Orçamento e gasto de meses anteriores (para calcular rollover)
     orc_ant   = query_df("SELECT COALESCE(SUM(valor),0) AS v FROM orcamento WHERE tipo=%s AND (item=%s OR item IS NULL) AND nro_mes<%s AND ano=%s", [categoria,item_q,nro_mes,ano])["v"].values[0]
+    gasto_ant = query_df("SELECT COALESCE(SUM(valor),0) AS v FROM lancamentos WHERE tipo_geral='Saida' AND categoria=%s AND nro_mes<%s AND ano=%s", [categoria,nro_mes,ano])["v"].values[0]
     saldo_anterior = float(orc_ant) - float(gasto_ant)
+
+    # Orçamento total do ano e gasto total do ano
+    orc_ano   = query_df("SELECT COALESCE(SUM(valor),0) AS v FROM orcamento WHERE tipo=%s AND (item=%s OR item IS NULL) AND ano=%s", [categoria,item_q,ano])["v"].values[0]
+    gasto_ano = query_df("SELECT COALESCE(SUM(valor),0) AS v FROM lancamentos WHERE tipo_geral='Saida' AND categoria=%s AND ano=%s", [categoria,ano])["v"].values[0]
+    saldo_ano = float(orc_ano) - float(gasto_ano)
+
     return {
-        "orcado":         float(orcado),
-        "gasto":          float(gasto),
-        "saldo_anterior": saldo_anterior,
-        "disponivel":     float(orcado) + saldo_anterior,
+        "orcado":          float(orcado),
+        "gasto":           float(gasto),
+        "saldo_anterior":  saldo_anterior,
+        "disponivel":      float(orcado) + saldo_anterior,
+        "saldo_ano":       saldo_ano,
+        "orc_ano":         float(orc_ano),
     }
 
 def get_total_ano(categoria, item, ano):
