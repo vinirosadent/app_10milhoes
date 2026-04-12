@@ -12,7 +12,6 @@ from core.database import (
 
 st.set_page_config(page_title="Lancamentos", page_icon="📝", layout="centered")
 
-# ── Session state ─────────────────────────────────────────────────────────
 if "modo" not in st.session_state:
     st.session_state.modo = "form"
 if "feedback_msg" not in st.session_state:
@@ -22,37 +21,30 @@ if "feedback_cor" not in st.session_state:
 
 CATS_COM_OBS = ["Bonus", "Reembolso Sheares", "Congresso", "Reembolso"]
 
-# ══════════════════════════════════════════════════════════════════════════
-# MODO SUCESSO — mostra feedback e botoes de navegacao
-# ══════════════════════════════════════════════════════════════════════════
+# Modo sucesso
 if st.session_state.modo == "sucesso":
-    st.title("📝 Lancamento Registrado")
+    st.title("Lancamento Registrado")
     st.markdown("---")
-
     if st.session_state.feedback_cor == "error":
         st.error(st.session_state.feedback_msg)
     elif st.session_state.feedback_cor == "warning":
         st.warning(st.session_state.feedback_msg)
     else:
         st.success(st.session_state.feedback_msg)
-
     st.markdown("---")
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("📝 Novo Lancamento", use_container_width=True, type="primary"):
+        if st.button("Novo Lancamento", use_container_width=True, type="primary"):
             st.session_state.modo = "form"
             st.rerun()
     with col2:
-        if st.button("🏠 Home", use_container_width=True):
-            st.switch_page("app.py")
+        if st.button("Home", use_container_width=True):
+            st.switch_page("pages/Home.py")
     st.stop()
 
-# ══════════════════════════════════════════════════════════════════════════
-# MODO FORM — formulario de lancamento
-# ══════════════════════════════════════════════════════════════════════════
-st.title("📝 Novo Lancamento")
+# Modo form
+st.title("Novo Lancamento")
 
-# ── Carregar configuracoes ────────────────────────────────────────────────
 meses_df      = get_meses()
 saidas_df     = get_config_saidas()
 entradas_df   = get_config_entradas()
@@ -64,7 +56,6 @@ pagamentos  = pagamentos_df["nome"].tolist()
 ultimo_mes = get_ultimo_mes()
 mes_index  = meses_lista.index(ultimo_mes) if ultimo_mes in meses_lista else 0
 
-# ── Formulario ────────────────────────────────────────────────────────────
 col1, col2 = st.columns(2)
 with col1:
     quem = st.selectbox("Quem esta lancando?", ["Vinicius", "Juliana"])
@@ -72,26 +63,21 @@ with col2:
     mes_nome = st.selectbox("Mes", meses_lista, index=mes_index)
 
 nro_mes = int(meses_df.loc[meses_df["nome"] == mes_nome, "nro"].values[0])
-
 tipo_geral = st.radio("Operacao", ["Saida", "Entrada"], horizontal=True)
 
 st.markdown("---")
 
-# ── Campos dinamicos ──────────────────────────────────────────────────────
 if tipo_geral == "Saida":
     naturezas = saidas_df["natureza"].unique().tolist()
     natureza  = st.selectbox("Natureza", naturezas)
-
     tipos     = saidas_df[saidas_df["natureza"] == natureza]["tipo"].unique().tolist()
     categoria = st.selectbox("Categoria", tipos)
-
     itens = saidas_df[
         (saidas_df["natureza"] == natureza) &
         (saidas_df["tipo"] == categoria)
     ]["item"].dropna().tolist()
     item      = st.selectbox("Item", itens) if itens else None
     pagamento = st.selectbox("Forma de pagamento", pagamentos)
-
 else:
     ent_filtrada = entradas_df[entradas_df["quem"] == quem]
     naturezas    = ent_filtrada["natureza"].unique().tolist() or entradas_df["natureza"].unique().tolist()
@@ -101,17 +87,9 @@ else:
     item         = None
     pagamento    = None
 
-# ── Valor (campo vazio, sem 0.00) ─────────────────────────────────────────
-valor = st.number_input(
-    "Valor (SGD)",
-    min_value=0.0,
-    value=None,
-    step=1.0,
-    format="%.2f",
-    placeholder="Digite o valor..."
-)
+valor = st.number_input("Valor (SGD)", min_value=0.0, value=None, step=1.0,
+                        format="%.2f", placeholder="Digite o valor...")
 
-# ── Observacao ────────────────────────────────────────────────────────────
 requer_obs = categoria in CATS_COM_OBS
 if requer_obs:
     st.caption("Esta categoria requer uma observacao.")
@@ -120,54 +98,65 @@ else:
     observacao = st.text_area("Observacao (opcional)") if st.checkbox("Adicionar observacao") else None
 
 st.markdown("---")
-
-# ── Botoes ────────────────────────────────────────────────────────────────
 col_con, col_reg = st.columns(2)
-
 with col_con:
-    consultar = st.button("🔍 Consultar Saldo", use_container_width=True)
+    consultar = st.button("Consultar Saldo", use_container_width=True)
 with col_reg:
-    registrar = st.button("✅ Registrar", use_container_width=True, type="primary")
+    registrar = st.button("Registrar", use_container_width=True, type="primary")
 
-# ── CONSULTAR ─────────────────────────────────────────────────────────────
+# CONSULTAR
 if consultar:
     if tipo_geral == "Entrada":
         st.info("Consulta de saldo e apenas para Saidas.")
     elif natureza == "Profissional":
-        st.info("Categoria Profissional — sem limite de orcamento.")
+        st.info("Categoria Profissional - sem limite de orcamento.")
     else:
         s     = get_consulta_saldo(categoria, item, nro_mes, 2026)
         chave = f"{categoria} / {item}" if item else categoria
-        if s["disponivel"] == 0 and s["orcado"] == 0:
-            st.warning(
-                f"Sem orcamento definido para **{chave}** em {mes_nome}. "
-                f"Gasto atual: SGD {s['gasto']:,.0f}."
-            )
+
+        if s["disponivel_mes"] == 0 and s["orc_mes"] == 0:
+            st.warning(f"Sem orcamento para **{chave}**. Gasto atual: SGD {s['gasto_mes']:,.0f}.")
         else:
-            resta      = s["disponivel"] - s["gasto"]
-            perc_gasto = (s["gasto"] / s["disponivel"] * 100) if s["disponivel"] > 0 else 0
-            perc_resta = (resta / s["disponivel"] * 100) if s["disponivel"] > 0 else 0
-            simul      = resta - (valor or 0)
+            v         = valor or 0
+            resta_mes = s["disponivel_mes"] - s["gasto_mes"] - v
+            saldo_ano = s["saldo_ano"] - v
+            perc      = ((s["gasto_mes"] + v) / s["disponivel_mes"] * 100) if s["disponivel_mes"] > 0 else 0
 
-            msg = (
-                f"**{chave} — {mes_nome}**\n\n"
-                f"- Orcado: SGD {s['orcado']:,.0f}\n"
-                f"- Ja gasto: SGD {s['gasto']:,.0f} ({perc_gasto:.1f}%)\n"
-                f"- Disponivel: SGD {resta:,.0f} ({perc_resta:.1f}%)"
-            )
-            if s["saldo_anterior"] != 0:
-                msg += f"\n- Saldo acumulado: SGD {s['saldo_anterior']:,.0f}"
-            if valor:
-                msg += f"\n- Apos este lancamento: SGD {simul:,.0f}"
+            gasto_total = s["gasto_mes"] + v
+            if gasto_total <= s["rollover"]:
+                contexto = f"Usando rollover de meses anteriores (SGD {s['rollover']:,.0f} acumulado)."
+            elif gasto_total <= s["disponivel_mes"]:
+                contexto = f"Usando rollover + orcamento de {mes_nome}."
+            else:
+                antecipado = gasto_total - s["disponivel_mes"]
+                contexto = f"Antecipando SGD {antecipado:,.0f} do orcamento de meses futuros!"
 
-            if resta <= 0:
+            if v > 0:
+                msg = (
+                    f"**{chave} - {mes_nome}**\n\n"
+                    f"Com o gasto de SGD {v:,.0f}, voce tera **SGD {max(resta_mes,0):,.0f}** "
+                    f"para gastar esse mes ({100-perc:.1f}% do disponivel de SGD {s['disponivel_mes']:,.0f}) "
+                    f"e **SGD {max(saldo_ano,0):,.0f}** esse ano.\n\n"
+                    f"{contexto}"
+                )
+            else:
+                msg = (
+                    f"**{chave} - {mes_nome}**\n\n"
+                    f"- Disponivel este mes: SGD {s['disponivel_mes']-s['gasto_mes']:,.0f} "
+                    f"(orcado SGD {s['orc_mes']:,.0f} + rollover SGD {s['rollover']:,.0f})\n"
+                    f"- Ja gasto este mes: SGD {s['gasto_mes']:,.0f}\n"
+                    f"- Disponivel ate Dezembro: SGD {s['saldo_ano']:,.0f}\n\n"
+                    f"{contexto}"
+                )
+
+            if resta_mes < 0:
                 st.error(msg)
-            elif perc_gasto > 80:
+            elif perc > 80:
                 st.warning(msg)
             else:
                 st.success(msg)
 
-# ── REGISTRAR ─────────────────────────────────────────────────────────────
+# REGISTRAR
 if registrar:
     if not valor:
         st.error("Insira um valor valido!")
@@ -200,24 +189,24 @@ if registrar:
                 st.session_state.feedback_cor = "success"
 
             else:
-                s           = get_consulta_saldo(categoria, item, nro_mes, 2026)
-                resta_mes   = s["disponivel_mes"] - s["gasto_mes"]
-                saldo_ano   = s["saldo_ano"]
-                perc        = (s["gasto_mes"] / s["disponivel_mes"] * 100) if s["disponivel_mes"] > 0 else 0
+                s         = get_consulta_saldo(categoria, item, nro_mes, 2026)
+                resta_mes = s["disponivel_mes"] - s["gasto_mes"]
+                saldo_ano = s["saldo_ano"]
+                perc      = (s["gasto_mes"] / s["disponivel_mes"] * 100) if s["disponivel_mes"] > 0 else 0
 
                 gasto_total = s["gasto_mes"]
                 if gasto_total <= s["rollover"]:
-                    contexto = f"🟢 Usando rollover acumulado (SGD {s['rollover']:,.0f})."
+                    contexto = f"Usando rollover acumulado (SGD {s['rollover']:,.0f})."
                 elif gasto_total <= s["disponivel_mes"]:
-                    contexto = f"🟡 Usando rollover + orçamento de {mes_nome}."
+                    contexto = f"Usando rollover + orcamento de {mes_nome}."
                 else:
                     antecipado = gasto_total - s["disponivel_mes"]
-                    contexto = f"🔴 Antecipando SGD {antecipado:,.0f} de meses futuros!"
+                    contexto = f"Antecipando SGD {antecipado:,.0f} de meses futuros!"
 
                 msg = (
                     f"SGD {valor:,.0f} em **{chave}** registrado!\n\n"
-                    f"Com o gasto de SGD {valor:,.0f}, você terá **SGD {max(resta_mes,0):,.0f}** "
-                    f"para gastar esse mês e **SGD {max(saldo_ano,0):,.0f}** esse ano.\n\n"
+                    f"Com o gasto de SGD {valor:,.0f}, voce tera **SGD {max(resta_mes,0):,.0f}** "
+                    f"para gastar esse mes e **SGD {max(saldo_ano,0):,.0f}** esse ano.\n\n"
                     f"{contexto}"
                 )
                 st.session_state.feedback_msg = msg
@@ -229,7 +218,7 @@ if registrar:
         except Exception as e:
             st.error(f"Erro ao registrar: {e}")
 
-# ── Ultimos lancamentos ───────────────────────────────────────────────────
+# Ultimos lancamentos
 st.markdown("---")
 st.subheader("Ultimos 10 lancamentos")
 df = get_lancamentos(ano=2026)
