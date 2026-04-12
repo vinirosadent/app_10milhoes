@@ -1,0 +1,17 @@
+# Ambiente virtual
+venv/
+
+# Credenciais — NUNCA subir isso
+.env
+
+# Cache Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Cache Streamlit
+.streamlit/secrets.toml
+
+# Dados locais
+*.csv
+*.xlsx
