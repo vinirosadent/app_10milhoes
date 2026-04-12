@@ -21,14 +21,14 @@ if "feedback_cor" not in st.session_state:
 
 CATS_COM_OBS = ["Bonus", "Reembolso Sheares", "Congresso", "Reembolso"]
 
-# Modo sucesso
+# ── Modo sucesso ──────────────────────────────────────────────────────────
 if st.session_state.modo == "sucesso":
     st.title("Lancamento Registrado")
     st.markdown("---")
-    if st.session_state.feedback_cor == "error":
-        st.error(st.session_state.feedback_msg)
-    elif st.session_state.feedback_cor == "warning":
+    if st.session_state.feedback_cor == "warning":
         st.warning(st.session_state.feedback_msg)
+    elif st.session_state.feedback_cor == "info":
+        st.info(st.session_state.feedback_msg)
     else:
         st.success(st.session_state.feedback_msg)
     st.markdown("---")
@@ -42,7 +42,7 @@ if st.session_state.modo == "sucesso":
             st.switch_page("pages/Home.py")
     st.stop()
 
-# Modo form
+# ── Modo form ─────────────────────────────────────────────────────────────
 st.title("Novo Lancamento")
 
 meses_df      = get_meses()
@@ -62,7 +62,7 @@ with col1:
 with col2:
     mes_nome = st.selectbox("Mes", meses_lista, index=mes_index)
 
-nro_mes = int(meses_df.loc[meses_df["nome"] == mes_nome, "nro"].values[0])
+nro_mes    = int(meses_df.loc[meses_df["nome"] == mes_nome, "nro"].values[0])
 tipo_geral = st.radio("Operacao", ["Saida", "Entrada"], horizontal=True)
 
 st.markdown("---")
@@ -72,7 +72,7 @@ if tipo_geral == "Saida":
     natureza  = st.selectbox("Natureza", naturezas)
     tipos     = saidas_df[saidas_df["natureza"] == natureza]["tipo"].unique().tolist()
     categoria = st.selectbox("Categoria", tipos)
-    itens = saidas_df[
+    itens     = saidas_df[
         (saidas_df["natureza"] == natureza) &
         (saidas_df["tipo"] == categoria)
     ]["item"].dropna().tolist()
@@ -104,7 +104,7 @@ with col_con:
 with col_reg:
     registrar = st.button("Registrar", use_container_width=True, type="primary")
 
-# CONSULTAR
+# ── CONSULTAR ─────────────────────────────────────────────────────────────
 if consultar:
     if tipo_geral == "Entrada":
         st.info("Consulta de saldo e apenas para Saidas.")
@@ -129,7 +129,7 @@ if consultar:
                 contexto = f"Usando rollover + orcamento de {mes_nome}."
             else:
                 antecipado = gasto_total - s["disponivel_mes"]
-                contexto = f"Antecipando SGD {antecipado:,.0f} do orcamento de meses futuros!"
+                contexto = f"Antecipando SGD {antecipado:,.0f} do orcamento de meses futuros."
 
             if v > 0:
                 msg = (
@@ -150,13 +150,13 @@ if consultar:
                 )
 
             if resta_mes < 0:
-                st.error(msg)
-            elif perc > 80:
                 st.warning(msg)
+            elif perc > 80:
+                st.info(msg)
             else:
                 st.success(msg)
 
-# REGISTRAR
+# ── REGISTRAR ─────────────────────────────────────────────────────────────
 if registrar:
     if not valor:
         st.error("Insira um valor valido!")
@@ -201,7 +201,7 @@ if registrar:
                     contexto = f"Usando rollover + orcamento de {mes_nome}."
                 else:
                     antecipado = gasto_total - s["disponivel_mes"]
-                    contexto = f"Antecipando SGD {antecipado:,.0f} de meses futuros!"
+                    contexto = f"Antecipando SGD {antecipado:,.0f} de meses futuros."
 
                 msg = (
                     f"SGD {valor:,.0f} em **{chave}** registrado!\n\n"
@@ -210,7 +210,7 @@ if registrar:
                     f"{contexto}"
                 )
                 st.session_state.feedback_msg = msg
-                st.session_state.feedback_cor = "error" if resta_mes < 0 else ("warning" if perc > 80 else "success")
+                st.session_state.feedback_cor = "warning" if resta_mes < 0 else ("info" if perc > 80 else "success")
 
             st.session_state.modo = "sucesso"
             st.rerun()
@@ -218,7 +218,7 @@ if registrar:
         except Exception as e:
             st.error(f"Erro ao registrar: {e}")
 
-# Ultimos lancamentos
+# ── Ultimos lancamentos ───────────────────────────────────────────────────
 st.markdown("---")
 st.subheader("Ultimos 10 lancamentos")
 df = get_lancamentos(ano=2026)
