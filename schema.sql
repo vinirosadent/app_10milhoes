@@ -126,3 +126,17 @@ CREATE INDEX IF NOT EXISTS idx_lan_quem      ON lancamentos(quem);
 CREATE INDEX IF NOT EXISTS idx_lan_tipo      ON lancamentos(tipo_geral);
 CREATE INDEX IF NOT EXISTS idx_lan_natureza  ON lancamentos(natureza);
 CREATE INDEX IF NOT EXISTS idx_lan_categoria ON lancamentos(categoria);
+
+CREATE TABLE IF NOT EXISTS usuarios (
+    id        SERIAL PRIMARY KEY,
+    nome      VARCHAR(50) NOT NULL UNIQUE,
+    papel     VARCHAR(20) DEFAULT 'membro',
+    tipo      VARCHAR(20) DEFAULT 'permanente',
+    ativo     BOOLEAN DEFAULT TRUE,
+    criado_em TIMESTAMP DEFAULT NOW()
+);
+
+INSERT INTO usuarios (nome, papel, tipo, ativo) VALUES
+  ('Vinicius', 'admin', 'permanente', TRUE),
+  ('Juliana',  'membro','permanente', TRUE)
+ON CONFLICT DO NOTHING;
