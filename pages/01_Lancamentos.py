@@ -200,22 +200,28 @@ if registrar:
                 st.session_state.feedback_cor = "success"
 
             else:
-                s          = get_consulta_saldo(categoria, item, nro_mes, 2026)
-                resta      = s["disponivel"] - s["gasto"]
-                perc_gasto = (s["gasto"] / s["disponivel"] * 100) if s["disponivel"] > 0 else 0
-                perc_resta = (resta / s["disponivel"] * 100) if s["disponivel"] > 0 else 0
+                s           = get_consulta_saldo(categoria, item, nro_mes, 2026)
+                resta_mes   = s["disponivel_mes"] - s["gasto_mes"]
+                saldo_ano   = s["saldo_ano"]
+                perc        = (s["gasto_mes"] / s["disponivel_mes"] * 100) if s["disponivel_mes"] > 0 else 0
+
+                gasto_total = s["gasto_mes"]
+                if gasto_total <= s["rollover"]:
+                    contexto = f"🟢 Usando rollover acumulado (SGD {s['rollover']:,.0f})."
+                elif gasto_total <= s["disponivel_mes"]:
+                    contexto = f"🟡 Usando rollover + orçamento de {mes_nome}."
+                else:
+                    antecipado = gasto_total - s["disponivel_mes"]
+                    contexto = f"🔴 Antecipando SGD {antecipado:,.0f} de meses futuros!"
 
                 msg = (
                     f"SGD {valor:,.0f} em **{chave}** registrado!\n\n"
-                    f"Com o gasto de SGD {valor:,.0f}, você terá **SGD {max(resta,0):,.0f}** "
-                    f"para gastar esse mês ({perc_resta:.1f}% do disponível de SGD {s['disponivel']:,.0f})"
-                    f" e **SGD {s['saldo_ano']:,.0f}** esse ano."
+                    f"Com o gasto de SGD {valor:,.0f}, você terá **SGD {max(resta_mes,0):,.0f}** "
+                    f"para gastar esse mês e **SGD {max(saldo_ano,0):,.0f}** esse ano.\n\n"
+                    f"{contexto}"
                 )
-                if s["saldo_anterior"] != 0:
-                    msg += f"\n\nRollover de meses anteriores: SGD {s['saldo_anterior']:,.0f}."
-
                 st.session_state.feedback_msg = msg
-                st.session_state.feedback_cor = "error" if resta < 0 else ("warning" if perc_gasto > 80 else "success")
+                st.session_state.feedback_cor = "error" if resta_mes < 0 else ("warning" if perc > 80 else "success")
 
             st.session_state.modo = "sucesso"
             st.rerun()
