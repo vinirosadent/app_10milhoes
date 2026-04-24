@@ -46,8 +46,11 @@ CREATE TABLE IF NOT EXISTS config_saidas (
     id       SERIAL PRIMARY KEY,
     natureza VARCHAR(50)  NOT NULL,
     tipo     VARCHAR(100) NOT NULL,
-    item     VARCHAR(100)
+    item     VARCHAR(100),
+    quitado  BOOLEAN DEFAULT FALSE
 );
+
+ALTER TABLE config_saidas ADD COLUMN IF NOT EXISTS quitado BOOLEAN DEFAULT FALSE;
 
 INSERT INTO config_saidas (natureza, tipo, item) VALUES
   ('Pessoal','Mercado',NULL),
