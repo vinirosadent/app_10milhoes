@@ -10,8 +10,11 @@ from core.database import (
     get_orcamento_matrix, set_orcamento_mes,
     set_orcamento_daqui_em_diante, set_orcamento_anual,
     get_categorias_orcamento, get_orcamento_vs_realizado,
-    get_usuarios, inserir_usuario, update_usuario, toggle_usuario_ativo
+    get_usuarios, inserir_usuario, update_usuario, toggle_usuario_ativo,
+    set_quitado,
 )
+
+CATEGORIAS_QUITAVEIS = {"Seguro Saúde", "Seguro Viagem", "Imposto Juliana"}
 
 st.set_page_config(page_title="Configuracoes", page_icon="🔧", layout="wide")
 st.title("🔧 Configurações")
@@ -115,6 +118,27 @@ with st.expander("💰 Orçamento", expanded=True):
             nat_sel  = cat_sel.split(" / ")[0]
             tipo_sel = cat_sel.split(" / ")[1]
             nro_mes  = MESES.index(mes_sel) + 1
+
+            if tipo_sel in CATEGORIAS_QUITAVEIS:
+                cfg_saidas = get_config_saidas()
+                row_cfg    = cfg_saidas[
+                    (cfg_saidas["natureza"] == nat_sel) &
+                    (cfg_saidas["tipo"] == tipo_sel)
+                ]
+                estado_atual = bool(row_cfg["quitado"].any()) if not row_cfg.empty else False
+                novo_estado  = st.checkbox(
+                    "✅ Conta quitada (paga à vista) — oculta a categoria nos meses posteriores ao pagamento",
+                    value=estado_atual,
+                    key=f"quitado_{nat_sel}_{tipo_sel}",
+                )
+                if novo_estado != estado_atual:
+                    set_quitado(nat_sel, tipo_sel, novo_estado)
+                    st.session_state["orc_msg"] = (
+                        f"✅ **{tipo_sel}** marcada como quitada."
+                        if novo_estado else
+                        f"↩️ **{tipo_sel}** desmarcada como quitada."
+                    )
+                    st.rerun()
 
             df_atual = get_orcamento_matrix(2026)
             df_atual = df_atual[

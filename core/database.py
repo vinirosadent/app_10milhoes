@@ -43,7 +43,10 @@ def get_ultimo_mes():
 
 # ── CONFIG ────────────────────────────────────────────────────────────────
 def get_config_saidas():
-    return query_df("SELECT natureza, tipo, item FROM config_saidas ORDER BY natureza, ordem, item")
+    return query_df("SELECT natureza, tipo, item, COALESCE(quitado, FALSE) AS quitado FROM config_saidas ORDER BY natureza, ordem, item")
+
+def set_quitado(natureza, tipo, quitado):
+    execute("UPDATE config_saidas SET quitado = %s WHERE natureza = %s AND tipo = %s", [bool(quitado), natureza, tipo])
 
 def get_config_entradas():
     return query_df("SELECT quem, natureza, tipo, requer_comentario FROM config_entradas ORDER BY natureza, tipo")
@@ -165,15 +168,66 @@ def get_categorias_orcamento(ano=2026):
 
 def get_orcamento_vs_realizado(ano=2026, nro_mes=None):
     if nro_mes:
+        # Monthly view: saldo reflects accumulated rollover (Jan..nro_mes).
+        # Categories marked quitado are hidden in months after the payment month
+        # when gasto_ano >= orcado_ano.
         sql = """
-            SELECT o.natureza, o.tipo, o.orcado,
-                   COALESCE(l.gasto,0) AS gasto,
-                   o.orcado - COALESCE(l.gasto,0) AS saldo
-            FROM (SELECT natureza, tipo, SUM(valor) AS orcado FROM orcamento WHERE ano=%s AND nro_mes=%s GROUP BY natureza, tipo) o
-            LEFT JOIN (SELECT categoria, SUM(valor) AS gasto FROM lancamentos WHERE tipo_geral='Saida' AND ano=%s AND nro_mes=%s GROUP BY categoria) l
-            ON l.categoria = o.tipo ORDER BY o.natureza, o.tipo
+            WITH orc_mes AS (
+                SELECT natureza, tipo, SUM(valor) AS orcado
+                FROM orcamento WHERE ano=%s AND nro_mes=%s
+                GROUP BY natureza, tipo
+            ),
+            orc_acum AS (
+                SELECT natureza, tipo, SUM(valor) AS orcado_acum
+                FROM orcamento WHERE ano=%s AND nro_mes<=%s
+                GROUP BY natureza, tipo
+            ),
+            gasto_mes AS (
+                SELECT categoria AS tipo, SUM(valor) AS gasto
+                FROM lancamentos WHERE tipo_geral='Saida' AND ano=%s AND nro_mes=%s
+                GROUP BY categoria
+            ),
+            gasto_acum AS (
+                SELECT categoria AS tipo, SUM(valor) AS gasto_acum
+                FROM lancamentos WHERE tipo_geral='Saida' AND ano=%s AND nro_mes<=%s
+                GROUP BY categoria
+            ),
+            gasto_ano AS (
+                SELECT categoria AS tipo, SUM(valor) AS gasto_ano, MAX(nro_mes) AS ultimo_mes
+                FROM lancamentos WHERE tipo_geral='Saida' AND ano=%s
+                GROUP BY categoria
+            ),
+            orc_ano AS (
+                SELECT natureza, tipo, SUM(valor) AS orcado_ano
+                FROM orcamento WHERE ano=%s
+                GROUP BY natureza, tipo
+            ),
+            quit AS (
+                SELECT natureza, tipo, BOOL_OR(COALESCE(quitado, FALSE)) AS quitado
+                FROM config_saidas
+                GROUP BY natureza, tipo
+            )
+            SELECT o.natureza, o.tipo,
+                   o.orcado,
+                   COALESCE(gm.gasto, 0) AS gasto,
+                   (COALESCE(oa.orcado_acum, 0) - COALESCE(ga.gasto_acum, 0)) AS saldo
+            FROM orc_mes o
+            LEFT JOIN orc_acum   oa ON oa.natureza = o.natureza AND oa.tipo = o.tipo
+            LEFT JOIN gasto_mes  gm ON gm.tipo = o.tipo
+            LEFT JOIN gasto_acum ga ON ga.tipo = o.tipo
+            LEFT JOIN gasto_ano  gy ON gy.tipo = o.tipo
+            LEFT JOIN orc_ano    oy ON oy.natureza = o.natureza AND oy.tipo = o.tipo
+            LEFT JOIN quit        q ON q.natureza  = o.natureza AND q.tipo  = o.tipo
+            WHERE NOT (
+                COALESCE(q.quitado, FALSE) = TRUE
+                AND COALESCE(gy.gasto_ano, 0) >= COALESCE(oy.orcado_ano, 0)
+                AND COALESCE(gy.gasto_ano, 0) > 0
+                AND %s > COALESCE(gy.ultimo_mes, 0)
+            )
+            ORDER BY o.natureza, o.tipo
         """
-        return query_df(sql, [ano, nro_mes, ano, nro_mes])
+        params = [ano, nro_mes, ano, nro_mes, ano, nro_mes, ano, nro_mes, ano, ano, nro_mes]
+        return query_df(sql, params)
     else:
         sql = """
             SELECT o.natureza, o.tipo, o.orcado,
