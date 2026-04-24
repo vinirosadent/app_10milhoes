@@ -169,8 +169,8 @@ def get_categorias_orcamento(ano=2026):
 def get_orcamento_vs_realizado(ano=2026, nro_mes=None):
     if nro_mes:
         # Monthly view: saldo reflects accumulated rollover (Jan..nro_mes).
-        # Categories marked quitado are hidden in months after the payment month
-        # when gasto_ano >= orcado_ano.
+        # Categories marked quitado (paid upfront) are hidden in months after
+        # the last registered payment.
         sql = """
             WITH orc_mes AS (
                 SELECT natureza, tipo, SUM(valor) AS orcado
@@ -197,11 +197,6 @@ def get_orcamento_vs_realizado(ano=2026, nro_mes=None):
                 FROM lancamentos WHERE tipo_geral='Saida' AND ano=%s
                 GROUP BY categoria
             ),
-            orc_ano AS (
-                SELECT natureza, tipo, SUM(valor) AS orcado_ano
-                FROM orcamento WHERE ano=%s
-                GROUP BY natureza, tipo
-            ),
             quit AS (
                 SELECT natureza, tipo, BOOL_OR(COALESCE(quitado, FALSE)) AS quitado
                 FROM config_saidas
@@ -216,17 +211,15 @@ def get_orcamento_vs_realizado(ano=2026, nro_mes=None):
             LEFT JOIN gasto_mes  gm ON gm.tipo = o.tipo
             LEFT JOIN gasto_acum ga ON ga.tipo = o.tipo
             LEFT JOIN gasto_ano  gy ON gy.tipo = o.tipo
-            LEFT JOIN orc_ano    oy ON oy.natureza = o.natureza AND oy.tipo = o.tipo
             LEFT JOIN quit        q ON q.natureza  = o.natureza AND q.tipo  = o.tipo
             WHERE NOT (
                 COALESCE(q.quitado, FALSE) = TRUE
-                AND COALESCE(gy.gasto_ano, 0) >= COALESCE(oy.orcado_ano, 0)
                 AND COALESCE(gy.gasto_ano, 0) > 0
                 AND %s > COALESCE(gy.ultimo_mes, 0)
             )
             ORDER BY o.natureza, o.tipo
         """
-        params = [ano, nro_mes, ano, nro_mes, ano, nro_mes, ano, nro_mes, ano, ano, nro_mes]
+        params = [ano, nro_mes, ano, nro_mes, ano, nro_mes, ano, nro_mes, ano, nro_mes]
         return query_df(sql, params)
     else:
         sql = """
