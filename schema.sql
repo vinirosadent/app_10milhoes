@@ -43,22 +43,43 @@ INSERT INTO config_entradas (quem, natureza, tipo, categoria, requer_comentario)
 ON CONFLICT DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS config_saidas (
-    id       SERIAL PRIMARY KEY,
-    natureza VARCHAR(50)  NOT NULL,
-    tipo     VARCHAR(100) NOT NULL,
-    item     VARCHAR(100),
+    id          SERIAL PRIMARY KEY,
+    natureza    VARCHAR(50)  NOT NULL,
+    tipo        VARCHAR(100) NOT NULL,
+    item        VARCHAR(100),
     -- ordem: usada em ORDER BY para controlar a posição visual da categoria nos selects.
     --        default 99 deixa novas categorias no final até serem ordenadas manualmente.
-    ordem    INTEGER       DEFAULT 99,
-    -- quitado: marca categorias anuais já pagas à vista. Quando o gasto acumulado
-    --          atinge o orçamento anual, a categoria some do BI dos meses seguintes.
-    quitado  BOOLEAN       DEFAULT FALSE
+    ordem       INTEGER       DEFAULT 99,
+    -- anual: marca categorias pagas em lump sum (uma vez por ano) — ex.: seguro saúde,
+    --        imposto Juliana, seguro viagem. Atributo permanente da categoria.
+    anual       BOOLEAN       DEFAULT FALSE,
+    -- quitado_ano: registra em que ano essa categoria foi quitada. NULL = não quitada.
+    --              Quando o app está em ano novo e quitado_ano != ano_corrente, a categoria
+    --              volta a aparecer normalmente no BI (sem precisar de reset manual).
+    quitado_ano INTEGER       NULL
 );
 
 -- Garante que bancos antigos (criados antes destas colunas) recebam a alteração
 -- sem precisar dropar a tabela. ADD COLUMN IF NOT EXISTS é idempotente.
-ALTER TABLE config_saidas ADD COLUMN IF NOT EXISTS ordem   INTEGER DEFAULT 99;
-ALTER TABLE config_saidas ADD COLUMN IF NOT EXISTS quitado BOOLEAN DEFAULT FALSE;
+ALTER TABLE config_saidas ADD COLUMN IF NOT EXISTS ordem        INTEGER DEFAULT 99;
+ALTER TABLE config_saidas ADD COLUMN IF NOT EXISTS anual        BOOLEAN DEFAULT FALSE;
+ALTER TABLE config_saidas ADD COLUMN IF NOT EXISTS quitado_ano  INTEGER NULL;
+
+-- Migra dados do esquema antigo (coluna quitado BOOLEAN) caso ela ainda exista.
+-- Idempotente: se a coluna já foi removida, o DO bloco não faz nada.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+         WHERE table_name = 'config_saidas' AND column_name = 'quitado'
+    ) THEN
+        EXECUTE 'UPDATE config_saidas
+                    SET anual       = COALESCE(anual, FALSE) OR quitado,
+                        quitado_ano = CASE WHEN quitado THEN 2026 ELSE quitado_ano END
+                  WHERE quitado IS NOT NULL';
+        EXECUTE 'ALTER TABLE config_saidas DROP COLUMN quitado';
+    END IF;
+END$$;
 
 INSERT INTO config_saidas (natureza, tipo, item) VALUES
   ('Pessoal','Mercado',NULL),

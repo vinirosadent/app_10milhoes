@@ -7,8 +7,13 @@ sys.path.append(str(Path(__file__).parent.parent))
 from core.database import (
     get_meses, get_ultimo_mes, get_config_saidas, get_config_entradas,
     get_formas_pagamento, inserir_lancamento, get_lancamentos,
-    get_consulta_saldo, get_total_ano
+    get_consulta_saldo, get_total_ano,
+    # Novas funcoes de quitacao para categorias anuais (lump sum):
+    is_categoria_anual, get_categorias_quitadas_no_ano, quitar_categoria
 )
+
+# Ano corrente da aplicacao (hardcoded por enquanto, ver project_app10milhoes.md).
+ANO_APP = 2026
 
 st.set_page_config(page_title="Lancamentos", page_icon="📝", layout="centered")
 
@@ -87,6 +92,27 @@ else:
     item         = None
     pagamento    = None
 
+# ── Checkbox "quitar agora" — so aparece para Saidas em categorias anuais ──
+# Categorias anuais (config_saidas.anual=TRUE) sao pagas em lump sum (uma vez
+# por ano). Quando o usuario registra o pagamento delas, pode marcar este
+# checkbox para ja informar que aquela categoria esta quitada no ano — assim
+# ela some do BI dos meses pos-pagamento. Pode ser desfeito em Configuracoes.
+quitar_agora = False
+if tipo_geral == "Saida" and is_categoria_anual(categoria):
+    cats_ja_quitadas = get_categorias_quitadas_no_ano(ANO_APP)
+    if categoria in cats_ja_quitadas:
+        st.info(
+            f"📌 Categoria **{categoria}** já está marcada como quitada em {ANO_APP}. "
+            "Para desfazer, vá em **Configurações → 🎯 Contas Anuais**."
+        )
+    else:
+        quitar_agora = st.checkbox(
+            f"✅ Este pagamento quita **{categoria}** pelo resto de {ANO_APP}",
+            value=False,
+            key="check_quitar",
+            help="A categoria some do BI nos meses pós-pagamento. Pode ser desfeito em Configurações → Contas Anuais."
+        )
+
 valor = st.number_input("Valor (SGD)", min_value=0.0, value=None, step=1.0,
                         format="%.2f", placeholder="Digite o valor...")
 
@@ -164,17 +190,33 @@ if registrar:
         st.error("Esta categoria requer uma observacao!")
     else:
         dados = {
-            "data": date.today(), "mes": mes_nome, "ano": 2026,
+            "data": date.today(), "mes": mes_nome, "ano": ANO_APP,
             "quem": quem, "tipo_geral": tipo_geral, "natureza": natureza,
             "categoria": categoria, "item": item, "valor": valor,
             "pagamento": pagamento, "observacao": observacao, "nro_mes": nro_mes,
         }
         try:
             inserir_lancamento(dados)
+
+            # Se o usuario marcou "este pagamento quita a categoria", aplica
+            # o UPDATE em config_saidas.quitado_ano agora — depois do INSERT
+            # do lancamento, para garantir que pelo menos um pagamento existe
+            # antes de declarar quitacao (consistencia).
+            if quitar_agora:
+                quitar_categoria(categoria, ANO_APP)
+
             chave = f"{categoria} / {item}" if item else categoria
 
+            # Prefixo de quitacao na mensagem de sucesso, quando aplicavel.
+            prefixo_quitacao = ""
+            if quitar_agora:
+                prefixo_quitacao = (
+                    f"💡 Categoria **{categoria}** marcada como quitada em {ANO_APP}. "
+                    f"Vai sumir do BI dos meses pós-{mes_nome}.\n\n"
+                )
+
             if tipo_geral == "Entrada":
-                total_ano = get_total_ano(categoria, item, 2026)
+                total_ano = get_total_ano(categoria, item, ANO_APP)
                 st.session_state.feedback_msg = (
                     f"Entrada de SGD {valor:,.0f} em {chave} registrada!\n\n"
                     f"Total acumulado no ano: SGD {total_ano:,.0f}."
@@ -189,7 +231,7 @@ if registrar:
                 st.session_state.feedback_cor = "success"
 
             else:
-                s         = get_consulta_saldo(categoria, item, nro_mes, 2026)
+                s         = get_consulta_saldo(categoria, item, nro_mes, ANO_APP)
                 resta_mes = s["disponivel_mes"] - s["gasto_mes"]
                 saldo_ano = s["saldo_ano"]
                 perc      = (s["gasto_mes"] / s["disponivel_mes"] * 100) if s["disponivel_mes"] > 0 else 0
@@ -204,6 +246,7 @@ if registrar:
                     contexto = f"Antecipando SGD {antecipado:,.0f} de meses futuros."
 
                 msg = (
+                    f"{prefixo_quitacao}"
                     f"SGD {valor:,.0f} em **{chave}** registrado!\n\n"
                     f"Com o gasto de SGD {valor:,.0f}, voce tera **SGD {max(resta_mes,0):,.0f}** "
                     f"para gastar esse mes e **SGD {max(saldo_ano,0):,.0f}** esse ano.\n\n"

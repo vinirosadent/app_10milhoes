@@ -260,14 +260,20 @@ with tab4:
             mes_t4     = st.selectbox("Mês", meses_disp, key="t4_mes")
             nro_mes_t4 = MESES_LISTA.index(mes_t4)+1 if mes_t4 in MESES_LISTA else None
 
-    df_orc2 = get_orcamento_vs_realizado(ano_sel, nro_mes_t4, esconder_quitados_mes=nro_mes_t4 is not None)
+    df_orc2 = get_orcamento_vs_realizado(
+        ano_sel, nro_mes_t4,
+        esconder_quitadas_anteriores=(nro_mes_t4 is not None),
+    )
 
     if df_orc2.empty:
         st.info("Nenhum orçamento definido.")
     else:
-        df_orc2.columns = ["Natureza","Categoria","orcado","gasto","saldo"]
+        # A funcao agora retorna 8 colunas: natureza, tipo, orcado, gasto, saldo,
+        # anual, quitado_ano, orcado_anual. Renomeia apenas as duas primeiras para
+        # manter compatibilidade com o resto do bloco.
+        df_orc2 = df_orc2.rename(columns={"natureza": "Natureza", "tipo": "Categoria"})
         df_orc2 = df_orc2[df_orc2["orcado"]>0].copy()
-        for c in ["orcado","gasto","saldo"]:
+        for c in ["orcado","gasto","saldo","orcado_anual"]:
             df_orc2[c] = df_orc2[c].round(0).astype(int)
         df_orc2["perc"] = (df_orc2["gasto"]/df_orc2["orcado"]*100).round(1)
 
@@ -278,34 +284,76 @@ with tab4:
 
         st.markdown("---")
         st.markdown("#### Orçado vs Realizado por Categoria")
-        st.caption("🔵 Realizado dentro do orçamento · 🔴 Excedente · ░ Orçado disponível")
+        st.caption(
+            "🔵 Realizado (dentro do orçado do período) · "
+            "🟡 Antecipado (categoria anual paga em lump sum, cabe no orçado anual) · "
+            "🔴 Excedente (gastou mais do que o orçado do período) · "
+            "░ Orçado disponível"
+        )
+
+        # Decompoe o gasto em 3 faixas:
+        #   - gasto_dentro:    parte do gasto que cabe no orcado do periodo (azul)
+        #   - antecipado:      parte acima do mensal acumulado de uma categoria ANUAL
+        #                      (lump sum) que ainda cabe no orcado anual (amarelo).
+        #                      Para categorias recorrentes mensais (anual=FALSE), nao
+        #                      ha conceito de "antecipacao" — gastou mais que o ritmo
+        #                      mensal e estouro, ponto.
+        #   - excedente_real:  parte que estourou o orcado do periodo (vermelho)
+        #
+        # No modo "Ano todo", orcado_anual == orcado, entao folga_anual=0 e
+        # qualquer excedente vai direto para vermelho (comportamento anterior).
+        df_orc2["gasto_dentro"]    = df_orc2[["gasto","orcado"]].min(axis=1)
+        df_orc2["excedente_total"] = (df_orc2["gasto"] - df_orc2["orcado"]).clip(lower=0)
+        df_orc2["folga_anual"]     = (df_orc2["orcado_anual"] - df_orc2["orcado"]).clip(lower=0)
+        # Antecipado so se aplica a categorias anuais. Para recorrentes mensais,
+        # excedente_total inteiro vai para vermelho.
+        df_orc2["antecipado"] = (
+            df_orc2[["excedente_total","folga_anual"]].min(axis=1)
+            .where(df_orc2["anual"] == True, other=0)
+        )
+        df_orc2["excedente_real"]  = df_orc2["excedente_total"] - df_orc2["antecipado"]
 
         fig = go.Figure()
 
-        # Barra de fundo: orçado total (cinza claro)
+        # Barra de fundo: orçado do período (cinza azulado claro)
         fig.add_trace(go.Bar(
             y=df_orc2["Categoria"], x=df_orc2["orcado"],
             name="Orçado", orientation="h", marker_color="#BBDEFB",
             hovertemplate="<b>%{y}</b><br>Orçado: SGD %{x:,}<extra></extra>"
         ))
 
-        # Parte azul: gasto até o limite do orçado
-        df_orc2["gasto_dentro"] = df_orc2[["gasto","orcado"]].min(axis=1)
+        # Parte azul: gasto até o limite do orçado do período
         fig.add_trace(go.Bar(
             y=df_orc2["Categoria"], x=df_orc2["gasto_dentro"],
             name="Realizado", orientation="h", marker_color=C_SALDO,
             hovertemplate="<b>%{y}</b><br>Realizado: SGD %{x:,}<extra></extra>"
         ))
 
-        # Parte vermelha: excedente (gasto - orçado, se positivo)
-        df_orc2["excedente"] = (df_orc2["gasto"] - df_orc2["orcado"]).clip(lower=0)
-        excedentes = df_orc2[df_orc2["excedente"] > 0]
-        if not excedentes.empty:
+        # Parte amarela: antecipado (passou do mensal, cabe no anual)
+        antecipados = df_orc2[df_orc2["antecipado"] > 0]
+        if not antecipados.empty:
             fig.add_trace(go.Bar(
-                y=excedentes["Categoria"], x=excedentes["excedente"],
-                name="Excedente", orientation="h",
-                marker_color=C_SAIDA, base=excedentes["orcado"],
-                hovertemplate="<b>%{y}</b><br>Excedente: SGD %{x:,}<extra></extra>"
+                y=antecipados["Categoria"], x=antecipados["antecipado"],
+                name="Antecipado", orientation="h",
+                marker_color="#F9A825", base=antecipados["orcado"],
+                hovertemplate=(
+                    "<b>%{y}</b><br>Antecipado: SGD %{x:,}"
+                    "<br><i>cabe no orçado anual</i><extra></extra>"
+                )
+            ))
+
+        # Parte vermelha: excedente real (estourou o orcado anual)
+        excedentes_reais = df_orc2[df_orc2["excedente_real"] > 0]
+        if not excedentes_reais.empty:
+            fig.add_trace(go.Bar(
+                y=excedentes_reais["Categoria"], x=excedentes_reais["excedente_real"],
+                name="Excedente real", orientation="h",
+                marker_color=C_SAIDA,
+                base=excedentes_reais["orcado"] + excedentes_reais["antecipado"],
+                hovertemplate=(
+                    "<b>%{y}</b><br>Excedente real: SGD %{x:,}"
+                    "<br><i>passou do orçado anual</i><extra></extra>"
+                )
             ))
 
         fig.update_layout(barmode="overlay", height=max(360, len(df_orc2)*38))

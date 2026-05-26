@@ -11,8 +11,13 @@ from core.database import (
     set_orcamento_daqui_em_diante, set_orcamento_anual,
     get_categorias_orcamento, get_orcamento_vs_realizado,
     get_usuarios, inserir_usuario, update_usuario, toggle_usuario_ativo,
-    toggle_categoria_quitada
+    # Funcoes do novo modelo de quitacao (anual + quitado_ano):
+    is_categoria_anual, set_categoria_anual,
+    quitar_categoria, desquitar_categoria
 )
+
+# Ano corrente da aplicacao (hardcoded por enquanto, ver project_app10milhoes.md).
+ANO_APP = 2026
 
 st.set_page_config(page_title="Configuracoes", page_icon="🔧", layout="wide")
 st.title("🔧 Configurações")
@@ -47,7 +52,9 @@ with st.expander("💰 Orçamento", expanded=True):
         if df_vr.empty:
             st.info("Nenhum orçamento definido. Importe do Sheets ou adicione uma categoria.")
         else:
-            df_vr.columns = ["Natureza","Categoria","orcado","gasto","saldo"]
+            # A funcao agora retorna 7 colunas (natureza, tipo, orcado, gasto, saldo, anual, quitado_ano).
+            # Renomeia apenas as duas primeiras para manter compatibilidade com o resto do bloco.
+            df_vr = df_vr.rename(columns={"natureza": "Natureza", "tipo": "Categoria"})
             df_vr["orcado"] = df_vr["orcado"].round(0).astype(int)
             df_vr["gasto"]  = df_vr["gasto"].round(0).astype(int)
             df_vr["saldo"]  = df_vr["saldo"].round(0).astype(int)
@@ -117,6 +124,28 @@ with st.expander("💰 Orçamento", expanded=True):
             tipo_sel = cat_sel.split(" / ")[1]
             nro_mes  = MESES.index(mes_sel) + 1
 
+            # ── Toggle "categoria anual" ──
+            # Permite marcar/desmarcar a categoria como anual (lump sum) direto na
+            # edicao do orcamento. Categorias anuais aparecem com orcado anual
+            # completo no BI e podem ser quitadas no form de Lancamentos — depois
+            # de quitadas, somem dos meses subsequentes ao pagamento.
+            anual_atual = is_categoria_anual(tipo_sel)
+            novo_anual = st.checkbox(
+                "💡 É despesa anual (paga uma vez por ano em lump sum)",
+                value=anual_atual,
+                key=f"edit_anual_{tipo_sel}",
+                help="Ex.: seguro saúde, imposto Juliana. Marca a categoria como anual."
+            )
+            if novo_anual != anual_atual:
+                set_categoria_anual(tipo_sel, novo_anual)
+                # Se desmarcou anual, tambem limpa o estado de quitacao (que so
+                # faz sentido para categorias anuais).
+                if not novo_anual:
+                    desquitar_categoria(tipo_sel)
+                rotulo = "anual" if novo_anual else "recorrente mensal"
+                st.session_state["orc_msg"] = f"✅ Categoria **{tipo_sel}** marcada como {rotulo}."
+                st.rerun()
+
             df_atual = get_orcamento_matrix(2026)
             df_atual = df_atual[
                 (df_atual["natureza"] == nat_sel) &
@@ -163,52 +192,101 @@ with st.expander("💰 Orçamento", expanded=True):
         if valor_anual:
             st.caption(f"SGD {valor_anual/12:,.0f}/mês")
 
+        # Checkbox para ja criar a categoria como anual (lump sum) — pode ser
+        # alterado depois na aba Editar.
+        marcar_anual = st.checkbox(
+            "💡 Esta é uma despesa anual (paga uma vez por ano em lump sum)",
+            value=False,
+            key="nova_anual",
+            help="Ex.: seguro saúde, imposto Juliana. Pode ser quitada no form de Lancamentos."
+        )
+
         if st.button("➕ Criar Orçamento Anual", type="primary", key="btn_nova_orc"):
             if not valor_anual:
                 st.error("Insira um valor anual.")
             else:
                 nat  = nova_cat.split(" / ")[0]
                 tipo = nova_cat.split(" / ")[1]
-                set_orcamento_anual(nat, tipo, 2026, valor_anual)
-                st.success(f"SGD {valor_anual:,.0f}/ano criado para {nova_cat} (SGD {valor_anual/12:,.0f}/mês)")
+                set_orcamento_anual(nat, tipo, ANO_APP, valor_anual)
+                if marcar_anual:
+                    set_categoria_anual(tipo, True)
+                rotulo_anual = " (marcada como anual)" if marcar_anual else ""
+                st.success(
+                    f"SGD {valor_anual:,.0f}/ano criado para {nova_cat}"
+                    f" (SGD {valor_anual/12:,.0f}/mês){rotulo_anual}"
+                )
                 st.rerun()
 
 # ══════════════════════════════════════════════════════════════════════════
-# SECAO 2 — CONTAS QUITADAS
+# SECAO 2 — CONTAS ANUAIS (gestao de quitacao)
 # ══════════════════════════════════════════════════════════════════════════
-with st.expander("🎯 Contas Anuais (Quitadas)", expanded=False):
+with st.expander("🎯 Contas Anuais", expanded=False):
     st.markdown(
-        "Marque as categorias pagas à vista (anuais). "
-        "Quando o gasto acumulado atingir o orçamento anual, a categoria some "
-        "automaticamente do BI dos meses **posteriores** ao pagamento."
+        "Categorias **anuais** (lump sum) sao pagas uma vez por ano em vez de "
+        "mensalmente — ex.: seguro saúde, imposto Juliana, seguro viagem.\n\n"
+        "Para marcar uma categoria como anual, vá em **💰 Orçamento → ✏️ Editar** "
+        "(checkbox \"💡 É despesa anual\").\n\n"
+        "Quando uma categoria anual é **quitada** num determinado ano, ela some do "
+        "BI dos meses **posteriores** ao pagamento. No mês do pagamento ela ainda "
+        "aparece (mostrando orçado anual vs gasto). Você pode quitar/desquitar aqui, "
+        "ou marcar \"quitar\" diretamente no form de Lançamentos ao registrar o pagamento."
     )
     st.markdown("---")
 
-    df_saidas = get_config_saidas(incluir_quitado=True)
-    cats_unicas = df_saidas[["natureza","tipo","quitado"]].drop_duplicates("tipo")
+    df_saidas   = get_config_saidas()
+    cats_anuais = df_saidas[df_saidas["anual"] == True][
+        ["natureza", "tipo", "quitado_ano"]
+    ].drop_duplicates("tipo")
 
-    if cats_unicas.empty:
-        st.info("Nenhuma categoria cadastrada em config_saidas.")
+    if cats_anuais.empty:
+        st.info(
+            "Nenhuma categoria marcada como anual ainda. "
+            "Vá em **💰 Orçamento → ✏️ Editar** ou **➕ Nova Categoria** e marque "
+            "o checkbox \"💡 É despesa anual\"."
+        )
     else:
-        cols_header = st.columns([3, 2, 1])
+        cols_header = st.columns([3, 2, 2, 2])
         cols_header[0].markdown("**Categoria**")
         cols_header[1].markdown("**Natureza**")
-        cols_header[2].markdown("**Quitada**")
+        cols_header[2].markdown(f"**Status {ANO_APP}**")
+        cols_header[3].markdown("**Ação**")
         st.divider()
 
-        for _, row in cats_unicas.iterrows():
-            col_cat, col_nat, col_chk = st.columns([3, 2, 1])
-            col_cat.markdown(row["tipo"])
+        for _, row in cats_anuais.iterrows():
+            col_cat, col_nat, col_status, col_acao = st.columns([3, 2, 2, 2])
+            col_cat.markdown(f"**{row['tipo']}**")
             col_nat.caption(row["natureza"])
-            novo_val = col_chk.checkbox(
-                "quitada",
-                value=bool(row["quitado"]),
-                key=f"quitado_{row['tipo']}",
-                label_visibility="hidden",
+
+            # quitado_ano e' INT64 (pandas) ou NaN — converter pra int comparavel
+            quitado = row["quitado_ano"]
+            quitada_neste_ano = (
+                pd.notna(quitado) and int(quitado) == ANO_APP
             )
-            if novo_val != bool(row["quitado"]):
-                toggle_categoria_quitada(row["tipo"], novo_val)
-                st.rerun()
+
+            if quitada_neste_ano:
+                col_status.markdown(f"✅ Quitada em {ANO_APP}")
+                if col_acao.button(
+                    "↩️ Desquitar",
+                    key=f"desquitar_{row['tipo']}",
+                    help="Volta a aparecer no BI dos meses pós-pagamento",
+                    use_container_width=True,
+                ):
+                    desquitar_categoria(row["tipo"])
+                    st.success(f"Categoria **{row['tipo']}** desquitada.")
+                    st.rerun()
+            else:
+                col_status.markdown("⏳ Aguardando pagamento")
+                if col_acao.button(
+                    "✅ Quitar agora",
+                    key=f"quitar_{row['tipo']}",
+                    type="primary",
+                    help=f"Marca como quitada em {ANO_APP} (some dos meses pós-pagamento)",
+                    use_container_width=True,
+                ):
+                    quitar_categoria(row["tipo"], ANO_APP)
+                    st.success(f"Categoria **{row['tipo']}** marcada como quitada em {ANO_APP}.")
+                    st.rerun()
+            st.divider()
 
 # ══════════════════════════════════════════════════════════════════════════
 # SECAO 3 — USUARIOS
@@ -316,7 +394,15 @@ with st.expander("📋 Gerenciar Lançamentos", expanded=False):
     meses_df    = get_meses()
     meses_lista = ["Todos"] + meses_df["nome"].tolist()
 
-    col1, col2, col3, col4 = st.columns(4)
+    # Monta a lista de categorias disponiveis a partir das config tables.
+    # Inclui tanto categorias de saida quanto de entrada para o filtro ser util
+    # independente do tipo de lancamento selecionado.
+    from core.database import get_config_entradas
+    cats_saida   = get_config_saidas()["tipo"].dropna().unique().tolist()
+    cats_entrada = get_config_entradas()["tipo"].dropna().unique().tolist()
+    cats_filtro  = ["Todas"] + sorted(set(cats_saida + cats_entrada))
+
+    col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
         filtro_mes  = st.selectbox("Mês", meses_lista, key="cfg_mes")
     with col2:
@@ -325,15 +411,21 @@ with st.expander("📋 Gerenciar Lançamentos", expanded=False):
         filtro_quem = st.selectbox("Quem", ["Todos","Vinicius","Juliana"], key="cfg_quem")
     with col4:
         filtro_nat  = st.selectbox("Natureza", ["Todos","Pessoal","Profissional","Investimento"], key="cfg_nat")
+    with col5:
+        filtro_cat  = st.selectbox("Categoria", cats_filtro, key="cfg_cat")
 
     df = get_lancamentos(
-        ano=2026,
+        ano=ANO_APP,
         quem=None if filtro_quem == "Todos" else filtro_quem,
         tipo_geral=None if filtro_tipo == "Todos" else filtro_tipo,
         natureza=None if filtro_nat == "Todos" else filtro_nat,
     )
     if filtro_mes != "Todos":
         df = df[df["mes"] == filtro_mes]
+    if filtro_cat != "Todas":
+        # Filtra direto no DataFrame (mais simples que estender get_lancamentos
+        # com mais um parametro — esta seção so visualiza, nao consulta volume grande).
+        df = df[df["categoria"] == filtro_cat]
 
     if df.empty:
         st.info("Nenhum lançamento encontrado.")
@@ -410,16 +502,23 @@ with st.expander("📋 Gerenciar Lançamentos", expanded=False):
             row = df[df["id"] == eid].iloc[0]
             st.markdown("---")
             st.subheader(f"✏️ Editando lançamento #{eid}")
+
+            # Helper: campos NULL no Postgres voltam como NaN no pandas.
+            # str(NaN or "") devolve "nan" (string literal), o que vazava como
+            # placeholder feio nos inputs. pd.notna() resolve o NULL/NaN corretamente.
+            def _safe(val):
+                return str(val) if pd.notna(val) else ""
+
             c1, c2, c3 = st.columns(3)
             with c1:
-                nova_cat  = st.text_input("Categoria", value=str(row["categoria"] or ""), key="e_cat")
-                novo_item = st.text_input("Item",       value=str(row["item"] or ""),      key="e_item")
+                nova_cat  = st.text_input("Categoria", value=_safe(row["categoria"]), key="e_cat")
+                novo_item = st.text_input("Item",      value=_safe(row["item"]),       key="e_item")
             with c2:
                 novo_val  = st.number_input("Valor", value=float(row["valor"]),
                                             min_value=0.0, format="%.0f", key="e_val")
-                novo_pgto = st.text_input("Pagamento", value=str(row["pagamento"] or ""), key="e_pgto")
+                novo_pgto = st.text_input("Pagamento", value=_safe(row["pagamento"]), key="e_pgto")
             with c3:
-                nova_obs  = st.text_area("Observação", value=str(row["observacao"] or ""), key="e_obs")
+                nova_obs  = st.text_area("Observação", value=_safe(row["observacao"]), key="e_obs")
 
             cs, cc = st.columns(2)
             with cs:
