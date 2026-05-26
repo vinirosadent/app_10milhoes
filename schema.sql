@@ -46,8 +46,19 @@ CREATE TABLE IF NOT EXISTS config_saidas (
     id       SERIAL PRIMARY KEY,
     natureza VARCHAR(50)  NOT NULL,
     tipo     VARCHAR(100) NOT NULL,
-    item     VARCHAR(100)
+    item     VARCHAR(100),
+    -- ordem: usada em ORDER BY para controlar a posição visual da categoria nos selects.
+    --        default 99 deixa novas categorias no final até serem ordenadas manualmente.
+    ordem    INTEGER       DEFAULT 99,
+    -- quitado: marca categorias anuais já pagas à vista. Quando o gasto acumulado
+    --          atinge o orçamento anual, a categoria some do BI dos meses seguintes.
+    quitado  BOOLEAN       DEFAULT FALSE
 );
+
+-- Garante que bancos antigos (criados antes destas colunas) recebam a alteração
+-- sem precisar dropar a tabela. ADD COLUMN IF NOT EXISTS é idempotente.
+ALTER TABLE config_saidas ADD COLUMN IF NOT EXISTS ordem   INTEGER DEFAULT 99;
+ALTER TABLE config_saidas ADD COLUMN IF NOT EXISTS quitado BOOLEAN DEFAULT FALSE;
 
 INSERT INTO config_saidas (natureza, tipo, item) VALUES
   ('Pessoal','Mercado',NULL),
