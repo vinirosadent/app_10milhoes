@@ -42,8 +42,18 @@ def get_ultimo_mes():
     return df["mes"].values[0] if not df.empty else None
 
 # ── CONFIG ────────────────────────────────────────────────────────────────
-def get_config_saidas():
-    return query_df("SELECT natureza, tipo, item FROM config_saidas ORDER BY natureza, ordem, item")
+def get_config_saidas(incluir_quitado=True):
+    sql = "SELECT natureza, tipo, item, quitado FROM config_saidas"
+    if not incluir_quitado:
+        sql += " WHERE quitado = FALSE"
+    sql += " ORDER BY natureza, ordem, item"
+    return query_df(sql)
+
+def get_categorias_quitadas():
+    return query_df("SELECT DISTINCT tipo FROM config_saidas WHERE quitado = TRUE")["tipo"].tolist()
+
+def toggle_categoria_quitada(tipo, quitado):
+    execute("UPDATE config_saidas SET quitado = %s WHERE tipo = %s", [quitado, tipo])
 
 def get_config_entradas():
     return query_df("SELECT quem, natureza, tipo, requer_comentario FROM config_entradas ORDER BY natureza, tipo")
@@ -163,17 +173,45 @@ def set_orcamento_anual(natureza, tipo, ano, valor_anual):
 def get_categorias_orcamento(ano=2026):
     return query_df("SELECT DISTINCT natureza, tipo FROM orcamento WHERE ano=%s ORDER BY natureza, tipo", [ano])
 
-def get_orcamento_vs_realizado(ano=2026, nro_mes=None):
+def get_orcamento_vs_realizado(ano=2026, nro_mes=None, esconder_quitados_mes=False):
     if nro_mes:
+        # Acumulado YTD até o mês selecionado (rollover retroativo incluso)
         sql = """
             SELECT o.natureza, o.tipo, o.orcado,
                    COALESCE(l.gasto,0) AS gasto,
                    o.orcado - COALESCE(l.gasto,0) AS saldo
-            FROM (SELECT natureza, tipo, SUM(valor) AS orcado FROM orcamento WHERE ano=%s AND nro_mes=%s GROUP BY natureza, tipo) o
-            LEFT JOIN (SELECT categoria, SUM(valor) AS gasto FROM lancamentos WHERE tipo_geral='Saida' AND ano=%s AND nro_mes=%s GROUP BY categoria) l
+            FROM (SELECT natureza, tipo, SUM(valor) AS orcado FROM orcamento WHERE ano=%s AND nro_mes<=%s GROUP BY natureza, tipo) o
+            LEFT JOIN (SELECT categoria, SUM(valor) AS gasto FROM lancamentos WHERE tipo_geral='Saida' AND ano=%s AND nro_mes<=%s GROUP BY categoria) l
             ON l.categoria = o.tipo ORDER BY o.natureza, o.tipo
         """
-        return query_df(sql, [ano, nro_mes, ano, nro_mes])
+        df = query_df(sql, [ano, nro_mes, ano, nro_mes])
+
+        if esconder_quitados_mes and not df.empty:
+            quitados = get_categorias_quitadas()
+            if quitados:
+                # Busca gasto acumulado ANTES do mês atual para cada categoria quitada
+                sql_gasto_antes = """
+                    SELECT categoria, SUM(valor) AS gasto_antes
+                    FROM lancamentos
+                    WHERE tipo_geral='Saida' AND ano=%s AND nro_mes<%s AND categoria = ANY(%s)
+                    GROUP BY categoria
+                """
+                df_antes = query_df(sql_gasto_antes, [ano, nro_mes, quitados])
+
+                # Busca orçamento anual total de cada categoria quitada
+                sql_orc_anual = """
+                    SELECT tipo, SUM(valor) AS orc_anual
+                    FROM orcamento WHERE ano=%s AND tipo = ANY(%s)
+                    GROUP BY tipo
+                """
+                df_orc = query_df(sql_orc_anual, [ano, quitados])
+
+                if not df_antes.empty and not df_orc.empty:
+                    merged = df_orc.merge(df_antes, left_on="tipo", right_on="categoria", how="left").fillna(0)
+                    # Categoria some do mês atual se já foi quitada num mês anterior
+                    ja_quitadas = merged[merged["gasto_antes"] >= merged["orc_anual"]]["tipo"].tolist()
+                    df = df[~df["tipo"].isin(ja_quitadas)]
+        return df
     else:
         sql = """
             SELECT o.natureza, o.tipo, o.orcado,

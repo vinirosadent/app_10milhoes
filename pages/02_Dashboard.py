@@ -260,7 +260,7 @@ with tab4:
             mes_t4     = st.selectbox("Mês", meses_disp, key="t4_mes")
             nro_mes_t4 = MESES_LISTA.index(mes_t4)+1 if mes_t4 in MESES_LISTA else None
 
-    df_orc2 = get_orcamento_vs_realizado(ano_sel, nro_mes_t4)
+    df_orc2 = get_orcamento_vs_realizado(ano_sel, nro_mes_t4, esconder_quitados_mes=nro_mes_t4 is not None)
 
     if df_orc2.empty:
         st.info("Nenhum orçamento definido.")

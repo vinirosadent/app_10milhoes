@@ -10,7 +10,8 @@ from core.database import (
     get_orcamento_matrix, set_orcamento_mes,
     set_orcamento_daqui_em_diante, set_orcamento_anual,
     get_categorias_orcamento, get_orcamento_vs_realizado,
-    get_usuarios, inserir_usuario, update_usuario, toggle_usuario_ativo
+    get_usuarios, inserir_usuario, update_usuario, toggle_usuario_ativo,
+    toggle_categoria_quitada
 )
 
 st.set_page_config(page_title="Configuracoes", page_icon="🔧", layout="wide")
@@ -173,7 +174,44 @@ with st.expander("💰 Orçamento", expanded=True):
                 st.rerun()
 
 # ══════════════════════════════════════════════════════════════════════════
-# SECAO 2 — USUARIOS
+# SECAO 2 — CONTAS QUITADAS
+# ══════════════════════════════════════════════════════════════════════════
+with st.expander("🎯 Contas Anuais (Quitadas)", expanded=False):
+    st.markdown(
+        "Marque as categorias pagas à vista (anuais). "
+        "Quando o gasto acumulado atingir o orçamento anual, a categoria some "
+        "automaticamente do BI dos meses **posteriores** ao pagamento."
+    )
+    st.markdown("---")
+
+    df_saidas = get_config_saidas(incluir_quitado=True)
+    cats_unicas = df_saidas[["natureza","tipo","quitado"]].drop_duplicates("tipo")
+
+    if cats_unicas.empty:
+        st.info("Nenhuma categoria cadastrada em config_saidas.")
+    else:
+        cols_header = st.columns([3, 2, 1])
+        cols_header[0].markdown("**Categoria**")
+        cols_header[1].markdown("**Natureza**")
+        cols_header[2].markdown("**Quitada**")
+        st.divider()
+
+        for _, row in cats_unicas.iterrows():
+            col_cat, col_nat, col_chk = st.columns([3, 2, 1])
+            col_cat.markdown(row["tipo"])
+            col_nat.caption(row["natureza"])
+            novo_val = col_chk.checkbox(
+                "quitada",
+                value=bool(row["quitado"]),
+                key=f"quitado_{row['tipo']}",
+                label_visibility="hidden",
+            )
+            if novo_val != bool(row["quitado"]):
+                toggle_categoria_quitada(row["tipo"], novo_val)
+                st.rerun()
+
+# ══════════════════════════════════════════════════════════════════════════
+# SECAO 3 — USUARIOS
 # ══════════════════════════════════════════════════════════════════════════
 with st.expander("👥 Usuários", expanded=False):
 
@@ -271,7 +309,7 @@ with st.expander("👥 Usuários", expanded=False):
                     st.error(f"Erro: {e}")
 
 # ══════════════════════════════════════════════════════════════════════════
-# SECAO 3 — LANCAMENTOS
+# SECAO 4 — LANCAMENTOS
 # ══════════════════════════════════════════════════════════════════════════
 with st.expander("📋 Gerenciar Lançamentos", expanded=False):
 
