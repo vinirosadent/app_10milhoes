@@ -1,0 +1,30 @@
+# Trava line endings em LF no repositorio, em qualquer SO.
+# Resolve o problema do Windows converter LF -> CRLF e gerar
+# diffs gigantes a cada migracao de pasta entre maquinas.
+
+# Default: arquivos de texto sao auto-detectados e armazenados como LF
+* text=auto eol=lf
+
+# Codigo e configs: forcar LF explicitamente
+*.py     text eol=lf
+*.sql    text eol=lf
+*.toml   text eol=lf
+*.md     text eol=lf
+*.yml    text eol=lf
+*.yaml   text eol=lf
+*.json   text eol=lf
+*.txt    text eol=lf
+*.csv    text eol=lf
+.env*    text eol=lf
+.gitignore text eol=lf
+
+# Binarios: nunca tentar converter line endings
+*.png    binary
+*.jpg    binary
+*.jpeg   binary
+*.gif    binary
+*.ico    binary
+*.pdf    binary
+*.xlsx   binary
+*.xls    binary
+*.zip    binary

@@ -15,3 +15,7 @@ __pycache__/
 # Dados locais
 *.csv
 *.xlsx
+
+# Artifacts de coordenação Cowork ↔ Claude no VS Code
+# (handoffs temporários, não devem versionar)
+_COWORK_HANDOFF_*.md
