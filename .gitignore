@@ -19,3 +19,4 @@ __pycache__/
 # Artifacts de coordenação Cowork ↔ Claude no VS Code
 # (handoffs temporários, não devem versionar)
 _COWORK_HANDOFF_*.md
+HANDOFF_*.md

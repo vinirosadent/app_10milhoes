@@ -8,7 +8,9 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 from core.database import (
     get_resumo_mensal, get_gastos_por_categoria, get_saldo_acumulado,
-    get_orcamento_vs_realizado, get_gastos_por_pessoa, get_gastos_mensais_por_pessoa
+    get_orcamento_vs_realizado, get_gastos_por_pessoa, get_gastos_mensais_por_pessoa,
+    # Etapa 3 - multi-usuario: lista de pessoas para o filtro vem do household ativo.
+    get_membros_household,
 )
 
 st.set_page_config(page_title="Dashboard", page_icon="📊", layout="wide")
@@ -27,8 +29,10 @@ MESES_LISTA = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho",
 # ── Sidebar ───────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("### 🔍 Filtros")
+    # Lista de pessoas dinamica conforme o household — Admin ve Vin+Jul; Ladroes ve Ricardo+Josi.
+    membros_filtro = ["Todos"] + get_membros_household()
     ano_sel  = st.selectbox("Ano",      [2026],                            key="db_ano")
-    quem_sel = st.selectbox("Pessoa",   ["Todos","Vinicius","Juliana"],     key="db_quem")
+    quem_sel = st.selectbox("Pessoa",   membros_filtro,                    key="db_quem")
     nat_sel  = st.selectbox("Natureza", ["Pessoal","Profissional","Todos"], key="db_nat")
 
 quem_param = None if quem_sel == "Todos" else quem_sel
@@ -406,15 +410,21 @@ with tab5:
             st.plotly_chart(fmt(fig2), use_container_width=True)
 
         st.markdown("#### Comparativo por Categoria")
-        df_v = get_gastos_por_categoria(ano_sel, quem="Vinicius", natureza=nat_param)
-        df_j = get_gastos_por_categoria(ano_sel, quem="Juliana",  natureza=nat_param)
+        # Comparativo dinamico entre os 2 primeiros membros do household. Se houver
+        # mais de 2 (improvavel no modelo atual), so os 2 primeiros entram — manter
+        # a tabela em 2 colunas e o paralelo visual com o pie chart acima.
+        membros_comp = get_membros_household()
+        if len(membros_comp) >= 2:
+            p1, p2 = membros_comp[0], membros_comp[1]
+            df_p1 = get_gastos_por_categoria(ano_sel, quem=p1, natureza=nat_param)
+            df_p2 = get_gastos_por_categoria(ano_sel, quem=p2, natureza=nat_param)
 
-        if not df_v.empty or not df_j.empty:
-            df_comp = df_v.merge(df_j, on="categoria", how="outer",
-                                 suffixes=("_V","_J")).fillna(0)
-            df_comp["total_V"] = df_comp["total_V"].round(0).astype(int)
-            df_comp["total_J"] = df_comp["total_J"].round(0).astype(int)
-            df_comp["Total"]   = df_comp["total_V"] + df_comp["total_J"]
-            df_comp.columns    = ["Categoria","Vinicius","Juliana","Total"]
-            st.dataframe(df_comp.sort_values("Total", ascending=False),
-                         use_container_width=True, hide_index=True)
+            if not df_p1.empty or not df_p2.empty:
+                df_comp = df_p1.merge(df_p2, on="categoria", how="outer",
+                                     suffixes=("_1","_2")).fillna(0)
+                df_comp["total_1"] = df_comp["total_1"].round(0).astype(int)
+                df_comp["total_2"] = df_comp["total_2"].round(0).astype(int)
+                df_comp["Total"]   = df_comp["total_1"] + df_comp["total_2"]
+                df_comp.columns    = ["Categoria", p1, p2, "Total"]
+                st.dataframe(df_comp.sort_values("Total", ascending=False),
+                             use_container_width=True, hide_index=True)

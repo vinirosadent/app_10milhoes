@@ -10,11 +10,13 @@ from core.database import (
     get_orcamento_matrix, set_orcamento_mes,
     set_orcamento_daqui_em_diante, set_orcamento_anual,
     get_categorias_orcamento, get_orcamento_vs_realizado,
-    get_usuarios, inserir_usuario, update_usuario, toggle_usuario_ativo,
+    # Etapa 3 (revisao): 2 logins (Admin/Ladron) — so resetar_senha e lista de membros.
+    resetar_senha, get_membros_household,
     # Funcoes do novo modelo de quitacao (anual + quitado_ano):
     is_categoria_anual, set_categoria_anual,
     quitar_categoria, desquitar_categoria
 )
+from core.auth import get_current_user
 
 # Ano corrente da aplicacao (hardcoded por enquanto, ver project_app10milhoes.md).
 ANO_APP = 2026
@@ -289,102 +291,45 @@ with st.expander("🎯 Contas Anuais", expanded=False):
             st.divider()
 
 # ══════════════════════════════════════════════════════════════════════════
-# SECAO 3 — USUARIOS
+# SECAO 3 — MINHA SENHA (Etapa 3 — modelo de 2 logins)
+#
+# O App 10M tem 2 logins compartilhados: Admin (Vinicius+Juliana usam o mesmo
+# login) e Ladron (Ricardo+Josi usam o mesmo). Por isso nao existe cadastro
+# de "novo usuario" pela UI — a unica acao util aqui e trocar a propria senha
+# do login compartilhado. A coluna `quem` nos lancamentos continua diferenciando
+# Vinicius vs Juliana (e Ric vs Josi) — vide households.membros, populado pela
+# migration consolidate_users_to_two_logins.
 # ══════════════════════════════════════════════════════════════════════════
-with st.expander("👥 Usuários", expanded=False):
+with st.expander("🔑 Minha senha", expanded=False):
 
-    tab_lista, tab_novo = st.tabs(["👥 Lista", "➕ Novo Usuário"])
+    user_logado = get_current_user()
 
-    # ── TAB 1: Lista de usuários ──────────────────────────────────────────
-    with tab_lista:
-        df_users = get_usuarios()
+    st.caption(
+        f"Você está logado como **{user_logado['nome']}** "
+        f"({user_logado['email']}) no household **{user_logado['household_nome']}** — "
+        f"que cobre os lançamentos de: {', '.join(get_membros_household())}."
+    )
+    st.markdown("---")
 
-        if df_users.empty:
-            st.info("Nenhum usuário cadastrado.")
+    with st.form("form_minha_senha", clear_on_submit=True):
+        nova1 = st.text_input("Nova senha", type="password", key="minha_sen_1",
+                              help="Mínimo 4 caracteres.")
+        nova2 = st.text_input("Confirme a nova senha", type="password", key="minha_sen_2")
+        trocar = st.form_submit_button("🔑 Trocar senha do login " + user_logado["nome"],
+                                       type="primary", use_container_width=True)
+
+    if trocar:
+        if len(nova1) < 4:
+            st.error("Senha deve ter ao menos 4 caracteres.")
+        elif nova1 != nova2:
+            st.error("As senhas não coincidem.")
         else:
-            for _, u in df_users.iterrows():
-                col_info, col_tipo, col_papel, col_status, col_acao = st.columns([2,1,1,1,2])
-
-                with col_info:
-                    st.markdown(f"**{u['nome']}**")
-                with col_tipo:
-                    tipo_label = "🏠 Permanente" if u["tipo"] == "permanente" else "🧳 Temporário"
-                    st.caption(tipo_label)
-                with col_papel:
-                    papel_label = "⭐ Admin" if u["papel"] == "admin" else "👤 Membro"
-                    st.caption(papel_label)
-                with col_status:
-                    if u["ativo"]:
-                        st.markdown("🟢 Ativo")
-                    else:
-                        st.markdown("🔴 Inativo")
-                with col_acao:
-                    col_a, col_b = st.columns(2)
-                    with col_a:
-                        if u["ativo"]:
-                            if st.button("Inativar", key=f"inativar_{u['id']}", use_container_width=True):
-                                toggle_usuario_ativo(u["id"], False)
-                                st.rerun()
-                        else:
-                            if st.button("Reativar", key=f"reativar_{u['id']}", type="primary", use_container_width=True):
-                                toggle_usuario_ativo(u["id"], True)
-                                st.rerun()
-                    with col_b:
-                        if st.button("Editar", key=f"editar_u_{u['id']}", use_container_width=True):
-                            st.session_state["editar_usuario_id"] = int(u["id"])
-
-                # Formulário de edição inline
-                if st.session_state.get("editar_usuario_id") == u["id"]:
-                    with st.container():
-                        st.markdown("---")
-                        ec1, ec2, ec3 = st.columns(3)
-                        with ec1:
-                            novo_nome  = st.text_input("Nome",  value=u["nome"],  key=f"u_nome_{u['id']}")
-                        with ec2:
-                            novo_papel = st.selectbox("Papel", ["admin","membro"],
-                                index=0 if u["papel"]=="admin" else 1, key=f"u_papel_{u['id']}")
-                        with ec3:
-                            novo_tipo  = st.selectbox("Tipo", ["permanente","temporario"],
-                                index=0 if u["tipo"]=="permanente" else 1, key=f"u_tipo_{u['id']}")
-
-                        cs, cc = st.columns(2)
-                        with cs:
-                            if st.button("💾 Salvar", type="primary", key=f"u_salvar_{u['id']}", use_container_width=True):
-                                update_usuario(u["id"], {"nome": novo_nome, "papel": novo_papel, "tipo": novo_tipo})
-                                st.session_state["editar_usuario_id"] = None
-                                st.success("Usuário atualizado!")
-                                st.rerun()
-                        with cc:
-                            if st.button("Cancelar", key=f"u_cancel_{u['id']}", use_container_width=True):
-                                st.session_state["editar_usuario_id"] = None
-                                st.rerun()
-                        st.markdown("---")
-
-                st.divider()
-
-    # ── TAB 2: Novo usuário ───────────────────────────────────────────────
-    with tab_novo:
-        with st.form("form_novo_usuario", clear_on_submit=True):
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                novo_nome  = st.text_input("Nome", placeholder="Ex: Maria")
-            with col2:
-                novo_papel = st.selectbox("Papel", ["membro","admin"])
-            with col3:
-                novo_tipo  = st.selectbox("Tipo", ["permanente","temporario"],
-                    help="Temporário: visita ou morador por período limitado")
-            submitted = st.form_submit_button("➕ Adicionar Usuário", type="primary", use_container_width=True)
-
-        if submitted:
-            if not novo_nome.strip():
-                st.error("Digite um nome.")
-            else:
-                try:
-                    inserir_usuario(novo_nome.strip(), novo_papel, novo_tipo)
-                    st.success(f"✅ Usuário **{novo_nome}** cadastrado com sucesso!")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Erro: {e}")
+            resetar_senha(user_logado["id"], nova1)
+            st.success(
+                f"✅ Senha do login **{user_logado['nome']}** atualizada. "
+                "Use a nova senha no próximo login. Avise o outro membro do household "
+                "se ele também usa este login."
+            )
 
 # ══════════════════════════════════════════════════════════════════════════
 # SECAO 4 — LANCAMENTOS
@@ -408,7 +353,9 @@ with st.expander("📋 Gerenciar Lançamentos", expanded=False):
     with col2:
         filtro_tipo = st.selectbox("Tipo", ["Todos","Saida","Entrada"], key="cfg_tipo")
     with col3:
-        filtro_quem = st.selectbox("Quem", ["Todos","Vinicius","Juliana"], key="cfg_quem")
+        # "Quem" derivado dinamicamente do household ativo (Etapa 3).
+        membros_lan = ["Todos"] + get_membros_household()
+        filtro_quem = st.selectbox("Quem", membros_lan, key="cfg_quem")
     with col4:
         filtro_nat  = st.selectbox("Natureza", ["Todos","Pessoal","Profissional","Investimento"], key="cfg_nat")
     with col5:

@@ -1,7 +1,8 @@
-streamlit 
-psycopg2-binary 
-pandas 
-plotly 
-openpyxl 
-python-dotenv 
-sqlalchemy 
+streamlit
+psycopg2-binary
+pandas
+plotly
+openpyxl
+python-dotenv
+sqlalchemy
+bcrypt

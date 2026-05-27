@@ -1,9 +1,33 @@
+"""
+Camada de acesso ao Postgres (Supabase) do App 10M.
+
+A partir da Etapa 3 (multi-usuario), TODAS as queries em tabelas tenant-
+isoladas (lancamentos, orcamento, config_saidas, config_entradas) precisam
+filtrar por household_id. O isolamento real entre households (Admin =
+Vinicius+Juliana; Ladroes = Ricardo+Josi) e feito AQUI, no codigo, via
+filtro WHERE household_id = ?. A RLS do Postgres serve apenas como rede
+de seguranca defensiva (block do role anon), porque o psycopg2 conecta
+como role com BYPASSRLS.
+
+Convencoes:
+  - Tabelas globais (meses, formas_pagamento, households) — sem filtro de tenant.
+  - Tabelas tenant-isoladas — toda funcao publica ou recebe household_id explicito
+    ou faz fallback para get_current_household_id() do session_state.
+  - INSERTs preenchem household_id automaticamente a partir do session_state.
+  - UPDATEs e DELETEs sempre incluem AND household_id = ? no WHERE, para impedir
+    que um bug de codigo permita afetar dados de outro household.
+
+Conexao via SESSION POOLER + sslmode=require (decisao fixa do projeto — Direct
+Connection falha por IPv6 no host onde o Streamlit Cloud roda).
+"""
 import os
 import psycopg2
 import psycopg2.extras
 import pandas as pd
 from dotenv import load_dotenv
 from pathlib import Path
+
+from core.auth import get_current_household_id
 
 load_dotenv(Path(__file__).parent.parent / ".env")
 
@@ -16,14 +40,17 @@ DB_CONFIG = {
     "sslmode":  "require",
 }
 
+
 def get_conn():
     return psycopg2.connect(**DB_CONFIG)
+
 
 def query_df(sql, params=None):
     conn = get_conn()
     df = pd.read_sql_query(sql, conn, params=params)
     conn.close()
     return df
+
 
 def execute(sql, params=None):
     conn = get_conn()
@@ -33,91 +60,157 @@ def execute(sql, params=None):
     cur.close()
     conn.close()
 
-# ── MESES ─────────────────────────────────────────────────────────────────
+
+def _hh(household_id=None) -> int:
+    """
+    Resolve household_id: usa o explicito se passado, senao puxa do session_state.
+    Levanta RuntimeError se nao houver usuario logado (vide core/auth.py).
+    """
+    if household_id is not None:
+        return int(household_id)
+    return get_current_household_id()
+
+
+# ── MESES (global) ────────────────────────────────────────────────────────
 def get_meses():
     return query_df("SELECT nro, nome FROM meses ORDER BY nro")
 
-def get_ultimo_mes():
-    df = query_df("SELECT mes FROM lancamentos ORDER BY criado_em DESC LIMIT 1")
+
+def get_ultimo_mes(household_id=None):
+    """Ultimo mes com lancamento no household atual (para sugerir no form)."""
+    hh = _hh(household_id)
+    df = query_df(
+        "SELECT mes FROM lancamentos WHERE household_id=%s ORDER BY criado_em DESC LIMIT 1",
+        [hh],
+    )
     return df["mes"].values[0] if not df.empty else None
 
-# ── CONFIG ────────────────────────────────────────────────────────────────
-def get_config_saidas(esconder_quitadas_do_ano=None):
-    """
-    Retorna categorias de saida com (natureza, tipo, item, ordem, anual, quitado_ano).
 
-    Se esconder_quitadas_do_ano=2026, omite as categorias anuais ja quitadas em 2026
-    (util para listas que filtram "o que ainda esta ativo no orcamento").
-    Default (None) retorna tudo, incluindo quitadas.
+# ── HOUSEHOLDS ────────────────────────────────────────────────────────────
+def get_households():
+    """Lista todos os households (global — usado em telas administrativas)."""
+    return query_df("SELECT id, nome FROM households ORDER BY id")
+
+
+def get_household_nome(household_id):
+    df = query_df("SELECT nome FROM households WHERE id=%s", [int(household_id)])
+    return df["nome"].values[0] if not df.empty else f"Household {household_id}"
+
+
+# ── CONFIG SAIDAS ─────────────────────────────────────────────────────────
+def get_config_saidas(esconder_quitadas_do_ano=None, household_id=None):
     """
-    sql = "SELECT natureza, tipo, item, ordem, anual, quitado_ano FROM config_saidas"
-    params = None
+    Retorna categorias de saida do household atual com colunas:
+      natureza, tipo, item, ordem, anual, quitado_ano.
+
+    esconder_quitadas_do_ano=2026 omite as anuais ja quitadas em 2026 (uso comum
+    em listas que filtram "o que ainda esta ativo no orcamento").
+    """
+    hh = _hh(household_id)
+    sql = "SELECT natureza, tipo, item, ordem, anual, quitado_ano FROM config_saidas WHERE household_id=%s"
+    params = [hh]
     if esconder_quitadas_do_ano is not None:
-        # Esconde apenas as anuais ja quitadas. Categorias nao-anuais e anuais
-        # ainda nao quitadas seguem aparecendo.
-        sql += " WHERE NOT (anual = TRUE AND quitado_ano = %s)"
-        params = [esconder_quitadas_do_ano]
+        sql += " AND NOT (anual = TRUE AND quitado_ano = %s)"
+        params.append(esconder_quitadas_do_ano)
     sql += " ORDER BY natureza, ordem, item"
     return query_df(sql, params)
 
-def get_categorias_anuais():
-    """Lista de tipos (str) marcados como anuais (lump sum) em config_saidas."""
+
+def get_categorias_anuais(household_id=None):
+    """Lista de tipos (str) marcados como anuais no household atual."""
+    hh = _hh(household_id)
     return query_df(
-        "SELECT DISTINCT tipo FROM config_saidas WHERE anual = TRUE ORDER BY tipo"
+        "SELECT DISTINCT tipo FROM config_saidas WHERE household_id=%s AND anual = TRUE ORDER BY tipo",
+        [hh],
     )["tipo"].tolist()
 
-def get_categorias_quitadas_no_ano(ano):
-    """Lista de tipos (str) de categorias anuais ja quitadas no ano informado."""
+
+def get_categorias_quitadas_no_ano(ano, household_id=None):
+    """Lista de tipos (str) de categorias anuais ja quitadas no ano informado, no household atual."""
+    hh = _hh(household_id)
     return query_df(
-        "SELECT DISTINCT tipo FROM config_saidas WHERE anual = TRUE AND quitado_ano = %s ORDER BY tipo",
-        [ano]
+        "SELECT DISTINCT tipo FROM config_saidas "
+        "WHERE household_id=%s AND anual = TRUE AND quitado_ano = %s ORDER BY tipo",
+        [hh, ano],
     )["tipo"].tolist()
 
-def is_categoria_anual(tipo):
-    """
-    True se a categoria 'tipo' esta marcada como anual em config_saidas.
-    Usado pelo form de Lancamentos para decidir se mostra o checkbox "quitar".
-    """
-    df = query_df("SELECT anual FROM config_saidas WHERE tipo = %s LIMIT 1", [tipo])
+
+def is_categoria_anual(tipo, household_id=None):
+    """True se a categoria 'tipo' esta marcada como anual no household atual."""
+    hh = _hh(household_id)
+    df = query_df(
+        "SELECT anual FROM config_saidas WHERE household_id=%s AND tipo = %s LIMIT 1",
+        [hh, tipo],
+    )
     return bool(df["anual"].values[0]) if not df.empty else False
 
-def set_categoria_anual(tipo, anual):
-    """Liga ou desliga a flag 'anual' de uma categoria (toggle em Configuracoes)."""
-    execute("UPDATE config_saidas SET anual = %s WHERE tipo = %s", [anual, tipo])
 
-def quitar_categoria(tipo, ano):
-    """Marca a categoria 'tipo' como quitada no ano informado (preenche quitado_ano)."""
-    execute("UPDATE config_saidas SET quitado_ano = %s WHERE tipo = %s", [ano, tipo])
+def set_categoria_anual(tipo, anual, household_id=None):
+    """Liga/desliga flag 'anual' de TODAS as linhas do tipo no household atual."""
+    hh = _hh(household_id)
+    execute(
+        "UPDATE config_saidas SET anual = %s WHERE household_id=%s AND tipo = %s",
+        [anual, hh, tipo],
+    )
 
-def desquitar_categoria(tipo):
-    """Limpa o estado de quitacao da categoria (quitado_ano vira NULL)."""
-    execute("UPDATE config_saidas SET quitado_ano = NULL WHERE tipo = %s", [tipo])
 
-def get_config_entradas():
-    return query_df("SELECT quem, natureza, tipo, requer_comentario FROM config_entradas ORDER BY natureza, tipo")
+def quitar_categoria(tipo, ano, household_id=None):
+    hh = _hh(household_id)
+    execute(
+        "UPDATE config_saidas SET quitado_ano = %s WHERE household_id=%s AND tipo = %s",
+        [ano, hh, tipo],
+    )
 
+
+def desquitar_categoria(tipo, household_id=None):
+    hh = _hh(household_id)
+    execute(
+        "UPDATE config_saidas SET quitado_ano = NULL WHERE household_id=%s AND tipo = %s",
+        [hh, tipo],
+    )
+
+
+# ── CONFIG ENTRADAS ───────────────────────────────────────────────────────
+def get_config_entradas(household_id=None):
+    hh = _hh(household_id)
+    return query_df(
+        "SELECT quem, natureza, tipo, requer_comentario FROM config_entradas "
+        "WHERE household_id=%s ORDER BY natureza, tipo",
+        [hh],
+    )
+
+
+# ── FORMAS DE PAGAMENTO (global) ──────────────────────────────────────────
 def get_formas_pagamento():
     return query_df("SELECT nome FROM formas_pagamento ORDER BY nome")
 
+
 # ── LANCAMENTOS ───────────────────────────────────────────────────────────
-def inserir_lancamento(d):
+def inserir_lancamento(d, household_id=None):
+    """
+    Insere lancamento. household_id e preenchido automaticamente do session_state
+    se nao passado explicitamente — chamadas das pages/ nao precisam saber dele.
+    """
+    hh = _hh(household_id)
     sql = """
         INSERT INTO lancamentos
             (data, mes, ano, quem, tipo_geral, natureza, quem_resp,
-             categoria, item, valor, pagamento, observacao, valor_real, nro_mes)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+             categoria, item, valor, pagamento, observacao, valor_real, nro_mes, household_id)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
     """
     valor_real = d["valor"] if d["tipo_geral"] == "Entrada" else -d["valor"]
     execute(sql, (
         d["data"], d["mes"], d["ano"], d["quem"], d["tipo_geral"],
         d["natureza"], d["quem"], d["categoria"], d.get("item"),
         d["valor"], d.get("pagamento"), d.get("observacao"),
-        valor_real, d["nro_mes"]
+        valor_real, d["nro_mes"], hh,
     ))
 
-def get_lancamentos(ano=2026, quem=None, tipo_geral=None, natureza=None):
-    sql = "SELECT * FROM lancamentos WHERE ano = %s"
-    params = [ano]
+
+def get_lancamentos(ano=2026, quem=None, tipo_geral=None, natureza=None, household_id=None):
+    hh = _hh(household_id)
+    sql = "SELECT * FROM lancamentos WHERE household_id=%s AND ano = %s"
+    params = [hh, ano]
     if quem:
         sql += " AND quem = %s"; params.append(quem)
     if tipo_geral:
@@ -127,44 +220,82 @@ def get_lancamentos(ano=2026, quem=None, tipo_geral=None, natureza=None):
     sql += " ORDER BY data DESC"
     return query_df(sql, params)
 
-def update_lancamento(id, campos):
+
+def update_lancamento(id, campos, household_id=None):
+    """Atualiza lancamento; AND household_id no WHERE previne afetar dados de outro tenant."""
+    hh = _hh(household_id)
     sets = ", ".join([f"{k} = %s" for k in campos.keys()])
-    execute(f"UPDATE lancamentos SET {sets} WHERE id = %s", list(campos.values()) + [id])
+    execute(
+        f"UPDATE lancamentos SET {sets} WHERE id = %s AND household_id = %s",
+        list(campos.values()) + [id, hh],
+    )
 
-def delete_lancamento(id):
-    execute("DELETE FROM lancamentos WHERE id = %s", [id])
 
-def delete_lancamentos(ids):
-    execute("DELETE FROM lancamentos WHERE id = ANY(%s)", [ids])
+def delete_lancamento(id, household_id=None):
+    hh = _hh(household_id)
+    execute("DELETE FROM lancamentos WHERE id = %s AND household_id = %s", [id, hh])
+
+
+def delete_lancamentos(ids, household_id=None):
+    hh = _hh(household_id)
+    execute(
+        "DELETE FROM lancamentos WHERE id = ANY(%s) AND household_id = %s",
+        [ids, hh],
+    )
+
 
 # ── CONSULTA DE SALDO ─────────────────────────────────────────────────────
-def get_consulta_saldo(categoria, item, nro_mes, ano):
+def get_consulta_saldo(categoria, item, nro_mes, ano, household_id=None):
+    hh = _hh(household_id)
     item_q = item if item else None
 
-    # Orçamento mês atual
-    orc_mes = float(query_df("SELECT COALESCE(SUM(valor),0) AS v FROM orcamento WHERE tipo=%s AND (item=%s OR item IS NULL) AND nro_mes=%s AND ano=%s", [categoria,item_q,nro_mes,ano])["v"].values[0])
+    # Orcamento mes atual
+    orc_mes = float(query_df(
+        "SELECT COALESCE(SUM(valor),0) AS v FROM orcamento "
+        "WHERE household_id=%s AND tipo=%s AND (item=%s OR item IS NULL) AND nro_mes=%s AND ano=%s",
+        [hh, categoria, item_q, nro_mes, ano]
+    )["v"].values[0])
 
-    # Gasto mês atual
-    gasto_mes = float(query_df("SELECT COALESCE(SUM(valor),0) AS v FROM lancamentos WHERE tipo_geral='Saida' AND categoria=%s AND nro_mes=%s AND ano=%s", [categoria,nro_mes,ano])["v"].values[0])
+    # Gasto mes atual
+    gasto_mes = float(query_df(
+        "SELECT COALESCE(SUM(valor),0) AS v FROM lancamentos "
+        "WHERE household_id=%s AND tipo_geral='Saida' AND categoria=%s AND nro_mes=%s AND ano=%s",
+        [hh, categoria, nro_mes, ano]
+    )["v"].values[0])
 
-    # Rollover: orçado - gasto de todos os meses anteriores
-    orc_ant   = float(query_df("SELECT COALESCE(SUM(valor),0) AS v FROM orcamento WHERE tipo=%s AND (item=%s OR item IS NULL) AND nro_mes<%s AND ano=%s", [categoria,item_q,nro_mes,ano])["v"].values[0])
-    gasto_ant = float(query_df("SELECT COALESCE(SUM(valor),0) AS v FROM lancamentos WHERE tipo_geral='Saida' AND categoria=%s AND nro_mes<%s AND ano=%s", [categoria,nro_mes,ano])["v"].values[0])
-    rollover  = orc_ant - gasto_ant
+    # Rollover: orcado - gasto de todos os meses anteriores
+    orc_ant = float(query_df(
+        "SELECT COALESCE(SUM(valor),0) AS v FROM orcamento "
+        "WHERE household_id=%s AND tipo=%s AND (item=%s OR item IS NULL) AND nro_mes<%s AND ano=%s",
+        [hh, categoria, item_q, nro_mes, ano]
+    )["v"].values[0])
+    gasto_ant = float(query_df(
+        "SELECT COALESCE(SUM(valor),0) AS v FROM lancamentos "
+        "WHERE household_id=%s AND tipo_geral='Saida' AND categoria=%s AND nro_mes<%s AND ano=%s",
+        [hh, categoria, nro_mes, ano]
+    )["v"].values[0])
+    rollover = orc_ant - gasto_ant
 
-    # Disponível total no mês (rollover + orçamento do mês)
     disponivel_mes = rollover + orc_mes
 
-    # Orçamento restante do ano (mês atual até dezembro)
-    orc_restante = float(query_df("SELECT COALESCE(SUM(valor),0) AS v FROM orcamento WHERE tipo=%s AND (item=%s OR item IS NULL) AND nro_mes>=%s AND ano=%s", [categoria,item_q,nro_mes,ano])["v"].values[0])
+    orc_restante = float(query_df(
+        "SELECT COALESCE(SUM(valor),0) AS v FROM orcamento "
+        "WHERE household_id=%s AND tipo=%s AND (item=%s OR item IS NULL) AND nro_mes>=%s AND ano=%s",
+        [hh, categoria, item_q, nro_mes, ano]
+    )["v"].values[0])
 
-    # Gasto total do ano até agora
-    gasto_ano = float(query_df("SELECT COALESCE(SUM(valor),0) AS v FROM lancamentos WHERE tipo_geral='Saida' AND categoria=%s AND ano=%s", [categoria,ano])["v"].values[0])
+    gasto_ano = float(query_df(
+        "SELECT COALESCE(SUM(valor),0) AS v FROM lancamentos "
+        "WHERE household_id=%s AND tipo_geral='Saida' AND categoria=%s AND ano=%s",
+        [hh, categoria, ano]
+    )["v"].values[0])
 
-    # Orçamento total do ano
-    orc_ano = float(query_df("SELECT COALESCE(SUM(valor),0) AS v FROM orcamento WHERE tipo=%s AND (item=%s OR item IS NULL) AND ano=%s", [categoria,item_q,ano])["v"].values[0])
+    orc_ano = float(query_df(
+        "SELECT COALESCE(SUM(valor),0) AS v FROM orcamento "
+        "WHERE household_id=%s AND tipo=%s AND (item=%s OR item IS NULL) AND ano=%s",
+        [hh, categoria, item_q, ano]
+    )["v"].values[0])
 
-    # Saldo disponível para o resto do ano
     saldo_ano = orc_ano - gasto_ano
 
     return {
@@ -178,83 +309,92 @@ def get_consulta_saldo(categoria, item, nro_mes, ano):
         "orc_restante":    orc_restante,
     }
 
-def get_total_ano(categoria, item, ano):
-    return float(query_df("SELECT COALESCE(SUM(valor),0) AS v FROM lancamentos WHERE tipo_geral='Saida' AND categoria=%s AND (item=%s OR item IS NULL) AND ano=%s", [categoria, item if item else None, ano])["v"].values[0])
 
-# ── ORÇAMENTO ─────────────────────────────────────────────────────────────
-def get_orcamento_matrix(ano=2026):
-    return query_df("SELECT natureza, tipo, nro_mes, valor FROM orcamento WHERE ano=%s ORDER BY natureza, tipo, nro_mes", [ano])
+def get_total_ano(categoria, item, ano, household_id=None):
+    hh = _hh(household_id)
+    return float(query_df(
+        "SELECT COALESCE(SUM(valor),0) AS v FROM lancamentos "
+        "WHERE household_id=%s AND tipo_geral='Saida' AND categoria=%s AND (item=%s OR item IS NULL) AND ano=%s",
+        [hh, categoria, item if item else None, ano]
+    )["v"].values[0])
 
-def set_orcamento_mes(natureza, tipo, nro_mes, ano, valor):
-    # Usa DO UPDATE simples com WHERE para evitar problema de ON CONFLICT com NULL
-    execute("""
-        UPDATE orcamento SET valor=%s
-        WHERE natureza=%s AND tipo=%s AND nro_mes=%s AND ano=%s AND item IS NULL
-    """, [valor, natureza, tipo, nro_mes, ano])
-    execute("""
-        INSERT INTO orcamento (natureza, tipo, item, nro_mes, ano, valor)
-        SELECT %s,%s,NULL,%s,%s,%s
-        WHERE NOT EXISTS (
-            SELECT 1 FROM orcamento
-            WHERE natureza=%s AND tipo=%s AND nro_mes=%s AND ano=%s AND item IS NULL
-        )
-    """, [natureza, tipo, nro_mes, ano, valor, natureza, tipo, nro_mes, ano])
 
-def set_orcamento_daqui_em_diante(natureza, tipo, nro_mes_inicio, ano, valor):
+# ── ORCAMENTO ─────────────────────────────────────────────────────────────
+def get_orcamento_matrix(ano=2026, household_id=None):
+    hh = _hh(household_id)
+    return query_df(
+        "SELECT natureza, tipo, nro_mes, valor FROM orcamento "
+        "WHERE household_id=%s AND ano=%s ORDER BY natureza, tipo, nro_mes",
+        [hh, ano],
+    )
+
+
+def set_orcamento_mes(natureza, tipo, nro_mes, ano, valor, household_id=None):
+    """
+    UPDATE-then-INSERT atomico em escopo de household. A race condition descrita
+    em [[project-indice-orcamento-divergencia]] continua existindo mas e ainda
+    mais improvavel agora (so colide se 2 usuarios DO MESMO household editarem
+    a mesma celula simultaneamente).
+    """
+    hh = _hh(household_id)
+    execute(
+        "UPDATE orcamento SET valor=%s "
+        "WHERE household_id=%s AND natureza=%s AND tipo=%s AND nro_mes=%s AND ano=%s AND item IS NULL",
+        [valor, hh, natureza, tipo, nro_mes, ano],
+    )
+    execute(
+        "INSERT INTO orcamento (natureza, tipo, item, nro_mes, ano, valor, household_id) "
+        "SELECT %s,%s,NULL,%s,%s,%s,%s "
+        "WHERE NOT EXISTS ("
+        "  SELECT 1 FROM orcamento "
+        "  WHERE household_id=%s AND natureza=%s AND tipo=%s AND nro_mes=%s AND ano=%s AND item IS NULL"
+        ")",
+        [natureza, tipo, nro_mes, ano, valor, hh,
+         hh, natureza, tipo, nro_mes, ano],
+    )
+
+
+def set_orcamento_daqui_em_diante(natureza, tipo, nro_mes_inicio, ano, valor, household_id=None):
+    hh = _hh(household_id)
     for m in range(nro_mes_inicio, 13):
-        set_orcamento_mes(natureza, tipo, m, ano, valor)
+        set_orcamento_mes(natureza, tipo, m, ano, valor, household_id=hh)
 
-def set_orcamento_anual(natureza, tipo, ano, valor_anual):
+
+def set_orcamento_anual(natureza, tipo, ano, valor_anual, household_id=None):
+    hh = _hh(household_id)
     for m in range(1, 13):
-        set_orcamento_mes(natureza, tipo, m, ano, round(valor_anual/12, 2))
+        set_orcamento_mes(natureza, tipo, m, ano, round(valor_anual/12, 2), household_id=hh)
 
-def get_categorias_orcamento(ano=2026):
-    return query_df("SELECT DISTINCT natureza, tipo FROM orcamento WHERE ano=%s ORDER BY natureza, tipo", [ano])
 
-def get_orcamento_vs_realizado(ano=2026, nro_mes=None, esconder_quitadas_anteriores=False):
+def get_categorias_orcamento(ano=2026, household_id=None):
+    hh = _hh(household_id)
+    return query_df(
+        "SELECT DISTINCT natureza, tipo FROM orcamento "
+        "WHERE household_id=%s AND ano=%s ORDER BY natureza, tipo",
+        [hh, ano],
+    )
+
+
+def get_orcamento_vs_realizado(ano=2026, nro_mes=None, esconder_quitadas_anteriores=False,
+                                household_id=None):
     """
-    Retorna o resumo de orcado vs gasto por categoria, com colunas:
-    natureza, tipo, orcado, gasto, saldo, anual, quitado_ano.
+    Resumo orcado vs gasto por categoria do household atual. Colunas:
+    natureza, tipo, orcado, gasto, saldo, anual, quitado_ano, orcado_anual.
 
-    Modos de operacao:
-
-    1) nro_mes=None -> visao do ANO TODO.
-       Orcado e gasto sao a soma de janeiro a dezembro. Nao esconde nada
-       (panorama anual completo). Categorias anuais aparecem com orcado anual.
-
-    2) nro_mes=N (1-12) -> visao acumulada ate o mes N.
-       * Categorias recorrentes (anual=FALSE): orcado e a soma de jan ate N,
-         simulando o "rollover" mensal de orcamento.
-       * Categorias anuais (anual=TRUE): orcado e o ANUAL COMPLETO. Isso resolve
-         o bug onde no mes do pagamento a categoria mostrava deficit gigante
-         (orcado acumulado mensal era 583*N enquanto o pagamento era 7000).
-
-       Se esconder_quitadas_anteriores=True, omite categorias anuais ja quitadas
-       no ano e cujo pagamento ocorreu em mes ANTERIOR ao mes N. No mes do
-       pagamento a categoria ainda aparece (mostra orcado=anual, gasto=valor pago,
-       saldo=sobra/deficit pequeno).
+    Mantém a logica complexa de "anual usa orcado anual completo, recorrente
+    mensal usa acumulado ate o mes N" — apenas adiciona filtro household_id em
+    todas as CTEs (orcamento, config_saidas via cs_agg, lancamentos).
     """
+    hh = _hh(household_id)
+
     if nro_mes:
-        # Acumulado ate o mes selecionado. Para categorias anuais, usa orcado
-        # ANUAL COMPLETO em vez do acumulado mensal — faz mais sentido porque
-        # a categoria e paga em lump sum, nao parcelada mensalmente.
-        #
-        # IMPORTANTE: config_saidas tem N linhas por categoria com subitens
-        # (Viagem=6, Lazer=2, Subscricoes=8, etc). Um LEFT JOIN direto multiplicaria
-        # o orcado por N. Por isso agregamos config_saidas antes do JOIN com
-        # BOOL_OR/MAX — qualquer linha do tipo marcada como anual basta para a
-        # categoria ser anual, e quitado_ano deve ser igual em todas (set_categoria_anual
-        # atualiza todas as linhas do mesmo tipo, mantendo a consistencia).
-        #
-        # Retorna tambem orcado_anual — soma do orcado de TODOS os meses do ano —
-        # usado pelo Dashboard para distinguir "antecipado" (gasto > orcado_acumulado
-        # mas <= orcado_anual) de "excedente real" (gasto > orcado_anual).
         sql = """
             WITH cs_agg AS (
                 SELECT tipo,
                        BOOL_OR(anual)   AS anual,
                        MAX(quitado_ano) AS quitado_ano
                 FROM config_saidas
+                WHERE household_id = %s
                 GROUP BY tipo
             ),
             orc_calc AS (
@@ -273,13 +413,14 @@ def get_orcamento_vs_realizado(ano=2026, nro_mes=None, esconder_quitadas_anterio
                     SUM(org.valor) AS orcado_anual
                 FROM orcamento org
                 LEFT JOIN cs_agg cs ON cs.tipo = org.tipo
-                WHERE org.ano = %s
+                WHERE org.household_id = %s AND org.ano = %s
                 GROUP BY org.natureza, org.tipo, cs.anual, cs.quitado_ano
             ),
             gasto_calc AS (
                 SELECT categoria, SUM(valor) AS gasto
                 FROM lancamentos
-                WHERE tipo_geral = 'Saida' AND ano = %s AND nro_mes <= %s
+                WHERE household_id = %s
+                  AND tipo_geral = 'Saida' AND ano = %s AND nro_mes <= %s
                 GROUP BY categoria
             )
             SELECT
@@ -295,27 +436,21 @@ def get_orcamento_vs_realizado(ano=2026, nro_mes=None, esconder_quitadas_anterio
             LEFT JOIN gasto_calc g ON g.categoria = o.tipo
             ORDER BY o.natureza, o.tipo
         """
-        df = query_df(sql, [nro_mes, ano, ano, nro_mes])
+        df = query_df(sql, [hh, nro_mes, hh, ano, hh, ano, nro_mes])
 
-        # Esconde categorias anuais ja quitadas no ano cujo pagamento foi em mes
-        # ANTERIOR ao selecionado. No mes do pagamento a categoria continua
-        # visivel (mostra orcado anual, gasto=pago, saldo=sobra ou pequeno deficit).
         if esconder_quitadas_anteriores and not df.empty:
             quitadas_no_ano = df[
                 (df["anual"] == True) & (df["quitado_ano"] == ano)
             ]["tipo"].tolist()
 
             if quitadas_no_ano:
-                # Pega o primeiro mes em que houve pagamento de cada categoria quitada.
-                # Se nao houver pagamento ainda (estado inconsistente — quitada na
-                # config mas sem lancamento), a categoria simplesmente continua aparecendo.
-                df_primeiro_pgto = query_df("""
-                    SELECT categoria, MIN(nro_mes) AS primeiro_mes_pago
-                    FROM lancamentos
-                    WHERE tipo_geral = 'Saida' AND ano = %s AND categoria = ANY(%s)
-                    GROUP BY categoria
-                """, [ano, quitadas_no_ano])
-
+                df_primeiro_pgto = query_df(
+                    "SELECT categoria, MIN(nro_mes) AS primeiro_mes_pago "
+                    "FROM lancamentos "
+                    "WHERE household_id=%s AND tipo_geral='Saida' AND ano=%s AND categoria = ANY(%s) "
+                    "GROUP BY categoria",
+                    [hh, ano, quitadas_no_ano],
+                )
                 if not df_primeiro_pgto.empty:
                     ja_pagas_antes = df_primeiro_pgto[
                         df_primeiro_pgto["primeiro_mes_pago"] < nro_mes
@@ -324,20 +459,13 @@ def get_orcamento_vs_realizado(ano=2026, nro_mes=None, esconder_quitadas_anterio
         return df
 
     else:
-        # Visao do ano todo: orcado e gasto sao a soma do ano inteiro.
-        # Nao esconde nada — panorama anual completo, mesmo para quitadas.
-        # Mesmo cuidado do modo mensal: agrega config_saidas antes do JOIN com
-        # BOOL_OR/MAX para nao multiplicar o orcado por nro de subitens.
-        #
-        # No modo anual, orcado_anual = orcado (toda a soma ja e do ano inteiro).
-        # Coluna repetida para o Dashboard ter sempre a mesma interface (modo mensal
-        # e anual retornam exatamente as mesmas 8 colunas).
         sql = """
             WITH cs_agg AS (
                 SELECT tipo,
                        BOOL_OR(anual)   AS anual,
                        MAX(quitado_ano) AS quitado_ano
                 FROM config_saidas
+                WHERE household_id = %s
                 GROUP BY tipo
             )
             SELECT
@@ -351,39 +479,107 @@ def get_orcamento_vs_realizado(ano=2026, nro_mes=None, esconder_quitadas_anterio
                 o.orcado                          AS orcado_anual
             FROM (
                 SELECT natureza, tipo, SUM(valor) AS orcado
-                FROM orcamento WHERE ano = %s
+                FROM orcamento WHERE household_id = %s AND ano = %s
                 GROUP BY natureza, tipo
             ) o
             LEFT JOIN cs_agg cs ON cs.tipo = o.tipo
             LEFT JOIN (
                 SELECT categoria, SUM(valor) AS gasto
                 FROM lancamentos
-                WHERE tipo_geral = 'Saida' AND ano = %s
+                WHERE household_id = %s AND tipo_geral = 'Saida' AND ano = %s
                 GROUP BY categoria
             ) l ON l.categoria = o.tipo
             ORDER BY o.natureza, o.tipo
         """
-        return query_df(sql, [ano, ano])
+        return query_df(sql, [hh, hh, ano, hh, ano])
 
-# ── USUARIOS ─────────────────────────────────────────────────────────────
-def get_usuarios(apenas_ativos=False):
-    sql = "SELECT * FROM usuarios"
-    if apenas_ativos:
-        sql += " WHERE ativo = TRUE"
-    return query_df(sql + " ORDER BY nome")
 
-def inserir_usuario(nome, papel, tipo):
-    execute("INSERT INTO usuarios (nome, papel, tipo, ativo) VALUES (%s,%s,%s,TRUE)", [nome, papel, tipo])
+# ── USUARIOS ──────────────────────────────────────────────────────────────
+def autenticar_usuario(login, senha):
+    """
+    Verifica credenciais. Aceita `login` como nome (ex: 'admin', 'ladrons') OU
+    como email completo (ex: 'admin@10milhoes.local') — torna o login mais
+    amigavel para o modelo simples de 2 logins compartilhados.
 
-def update_usuario(id, campos):
-    sets = ", ".join([f"{k} = %s" for k in campos.keys()])
-    execute(f"UPDATE usuarios SET {sets} WHERE id = %s", list(campos.values()) + [id])
+    Retorna dict com os dados do usuario (incluindo household_id e household_nome)
+    se bater, ou None caso contrario. Importa verify_password localmente para
+    evitar ciclo de import.
+    """
+    if not login or not senha:
+        return None
+    from core.auth import verify_password
 
-def toggle_usuario_ativo(id, ativo):
-    execute("UPDATE usuarios SET ativo = %s WHERE id = %s", [ativo, id])
+    login_norm = login.strip().lower()
+    df = query_df(
+        "SELECT id, nome, email, papel, household_id, password_hash, ativo "
+        "FROM usuarios WHERE LOWER(nome) = %s OR LOWER(email) = %s LIMIT 1",
+        [login_norm, login_norm],
+    )
+    if df.empty:
+        return None
+    row = df.iloc[0]
+    if not bool(row["ativo"]):
+        return None
+    if not row["password_hash"]:
+        return None  # usuario sem senha configurada nunca loga
+    if not verify_password(senha, str(row["password_hash"])):
+        return None
+
+    hh_id = int(row["household_id"]) if pd.notna(row["household_id"]) else None
+    hh_nome = get_household_nome(hh_id) if hh_id else "—"
+
+    return {
+        "id":             int(row["id"]),
+        "nome":           row["nome"],
+        "email":          row["email"],
+        "papel":          row["papel"],
+        "household_id":   hh_id,
+        "household_nome": hh_nome,
+    }
+
+
+def get_membros_household(household_id=None):
+    """
+    Lista de nomes (str) que aparecem no select "quem" do form de Lancamentos
+    e nos filtros do Dashboard/Configuracoes.
+
+    No modelo de 2 logins (Admin e Ladron), cada login e usado por 2 pessoas que
+    nao tem usuario proprio — Vinicius e Juliana usam Admin; Ricardo e Josi usam
+    Ladron. A lista de nomes mora em `households.membros` (text[]) e e a fonte
+    autoritativa do que aparece no select.
+
+    Retorna a lista ordenada alfabeticamente. Se a coluna estiver vazia, retorna
+    lista vazia — a UI faz fallback para "-".
+    """
+    hh = _hh(household_id)
+    df = query_df("SELECT membros FROM households WHERE id = %s", [hh])
+    if df.empty:
+        return []
+    membros = df["membros"].iloc[0]
+    if membros is None:
+        return []
+    return sorted(list(membros))
+
+
+def resetar_senha(id, nova_senha, household_id=None):
+    """
+    Reset de senha do login atual (Admin ou Ladron). No modelo de 2 logins, o
+    proprio usuario troca a propria senha em Configuracoes -> Minha senha.
+    Mantido household_id no WHERE como defesa em profundidade (impede um codigo
+    bugado de resetar a senha do outro login por engano).
+    """
+    from core.auth import hash_password
+    hh = _hh(household_id)
+    novo_hash = hash_password(nova_senha)
+    execute(
+        "UPDATE usuarios SET password_hash = %s WHERE id = %s AND household_id = %s",
+        [novo_hash, id, hh],
+    )
+
 
 # ── DASHBOARD ─────────────────────────────────────────────────────────────
-def get_resumo_mensal(ano=2026, quem=None, natureza=None):
+def get_resumo_mensal(ano=2026, quem=None, natureza=None, household_id=None):
+    hh = _hh(household_id)
     sql = """
         SELECT l.nro_mes, m.nome AS mes,
             SUM(CASE WHEN l.tipo_geral='Entrada' THEN l.valor ELSE 0 END) AS entradas,
@@ -392,48 +588,56 @@ def get_resumo_mensal(ano=2026, quem=None, natureza=None):
             SUM(CASE WHEN l.tipo_geral='Saida'   THEN l.valor ELSE 0 END) AS saldo
         FROM lancamentos l
         JOIN meses m ON m.nro = l.nro_mes
-        WHERE l.ano=%s
+        WHERE l.household_id=%s AND l.ano=%s
     """
-    params = [ano]
+    params = [hh, ano]
     if quem:     sql += " AND l.quem=%s";     params.append(quem)
     if natureza: sql += " AND l.natureza=%s"; params.append(natureza)
     return query_df(sql + " GROUP BY l.nro_mes, m.nome ORDER BY l.nro_mes", params)
 
-def get_gastos_por_categoria(ano=2026, nro_mes=None, quem=None, natureza=None):
-    sql = "SELECT categoria, SUM(valor) AS total FROM lancamentos WHERE tipo_geral='Saida' AND ano=%s"
-    params = [ano]
+
+def get_gastos_por_categoria(ano=2026, nro_mes=None, quem=None, natureza=None, household_id=None):
+    hh = _hh(household_id)
+    sql = "SELECT categoria, SUM(valor) AS total FROM lancamentos WHERE household_id=%s AND tipo_geral='Saida' AND ano=%s"
+    params = [hh, ano]
     if nro_mes:  sql += " AND nro_mes=%s";  params.append(nro_mes)
     if quem:     sql += " AND quem=%s";     params.append(quem)
     if natureza: sql += " AND natureza=%s"; params.append(natureza)
     return query_df(sql + " GROUP BY categoria ORDER BY total DESC", params)
 
-def get_gastos_mensais_por_pessoa(ano=2026, natureza=None):
+
+def get_gastos_mensais_por_pessoa(ano=2026, natureza=None, household_id=None):
+    hh = _hh(household_id)
     sql = """
         SELECT l.nro_mes, m.nome AS mes, l.quem, SUM(l.valor) AS total
         FROM lancamentos l
         JOIN meses m ON m.nro = l.nro_mes
-        WHERE l.tipo_geral='Saida' AND l.ano=%s
+        WHERE l.household_id=%s AND l.tipo_geral='Saida' AND l.ano=%s
     """
-    params = [ano]
+    params = [hh, ano]
     if natureza: sql += " AND l.natureza=%s"; params.append(natureza)
     return query_df(sql + " GROUP BY l.nro_mes, m.nome, l.quem ORDER BY l.nro_mes, l.quem", params)
 
-def get_gastos_por_pessoa(ano=2026, nro_mes=None, natureza=None):
-    sql = "SELECT quem, SUM(valor) AS total FROM lancamentos WHERE tipo_geral='Saida' AND ano=%s"
-    params = [ano]
+
+def get_gastos_por_pessoa(ano=2026, nro_mes=None, natureza=None, household_id=None):
+    hh = _hh(household_id)
+    sql = "SELECT quem, SUM(valor) AS total FROM lancamentos WHERE household_id=%s AND tipo_geral='Saida' AND ano=%s"
+    params = [hh, ano]
     if nro_mes:  sql += " AND nro_mes=%s";  params.append(nro_mes)
     if natureza: sql += " AND natureza=%s"; params.append(natureza)
     return query_df(sql + " GROUP BY quem ORDER BY total DESC", params)
 
-def get_saldo_acumulado(ano=2026, natureza=None):
+
+def get_saldo_acumulado(ano=2026, natureza=None, household_id=None):
+    hh = _hh(household_id)
     where_nat = "AND l.natureza=%s" if natureza else ""
-    params    = [ano] + ([natureza] if natureza else [])
+    params    = [hh, ano] + ([natureza] if natureza else [])
     return query_df(f"""
         SELECT sub.nro_mes, m.nome AS mes,
             SUM(sub.valor_real) OVER (ORDER BY sub.nro_mes) AS saldo_acumulado
         FROM (
             SELECT nro_mes, SUM(valor_real) AS valor_real
-            FROM lancamentos l WHERE ano=%s {where_nat}
+            FROM lancamentos l WHERE household_id=%s AND ano=%s {where_nat}
             GROUP BY nro_mes
         ) sub
         JOIN meses m ON m.nro = sub.nro_mes

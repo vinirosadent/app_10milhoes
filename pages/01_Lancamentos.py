@@ -9,7 +9,9 @@ from core.database import (
     get_formas_pagamento, inserir_lancamento, get_lancamentos,
     get_consulta_saldo, get_total_ano,
     # Novas funcoes de quitacao para categorias anuais (lump sum):
-    is_categoria_anual, get_categorias_quitadas_no_ano, quitar_categoria
+    is_categoria_anual, get_categorias_quitadas_no_ano, quitar_categoria,
+    # Etapa 3 - multi-usuario: lista dinamica de quem pode lancar (membros do household).
+    get_membros_household,
 )
 
 # Ano corrente da aplicacao (hardcoded por enquanto, ver project_app10milhoes.md).
@@ -63,7 +65,11 @@ mes_index  = meses_lista.index(ultimo_mes) if ultimo_mes in meses_lista else 0
 
 col1, col2 = st.columns(2)
 with col1:
-    quem = st.selectbox("Quem esta lancando?", ["Vinicius", "Juliana"])
+    # Lista de "quem" vem dos usuarios ATIVOS do household do usuario logado.
+    # No Admin: Vinicius+Juliana. No Ladroes: Ricardo+Josi. Cresce/encolhe conforme
+    # admin do household ativar/desativar usuarios em Configuracoes.
+    membros = get_membros_household() or ["—"]
+    quem = st.selectbox("Quem esta lancando?", membros)
 with col2:
     mes_nome = st.selectbox("Mes", meses_lista, index=mes_index)
 
