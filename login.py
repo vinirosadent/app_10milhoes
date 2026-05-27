@@ -15,7 +15,7 @@ from core.database import autenticar_usuario
 
 
 def login_page():
-    st.title("🐯 App dos 10 Milhões")
+    st.title("🐯 App dos Milhões 🐯")
     st.markdown("---")
 
     col1, col2, col3 = st.columns([1, 2, 1])

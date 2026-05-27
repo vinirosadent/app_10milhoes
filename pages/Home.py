@@ -1,6 +1,6 @@
 import streamlit as st
 
-st.title("🐯 App dos 10 Milhoes")
+st.title("🐯 App dos Milhões 🐯")
 st.markdown("---")
 
 col1, col2, col3 = st.columns(3)

@@ -15,7 +15,7 @@ from login import login_page
 from core.auth import logout
 
 st.set_page_config(
-    page_title="App dos 10 Milhoes",
+    page_title="App dos Milhões",
     page_icon="🐯",
     layout="wide",
     initial_sidebar_state="expanded",
