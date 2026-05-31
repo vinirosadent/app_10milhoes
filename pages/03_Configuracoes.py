@@ -342,7 +342,9 @@ with st.expander("📋 Gerenciar Lançamentos", expanded=False):
     # Monta a lista de categorias disponiveis a partir das config tables.
     # Inclui tanto categorias de saida quanto de entrada para o filtro ser util
     # independente do tipo de lancamento selecionado.
-    from core.database import get_config_entradas
+    # get_formas_pagamento entra junto porque o form de edicao mais abaixo
+    # precisa popular o dropdown de Pagamento com a tabela canonica.
+    from core.database import get_config_entradas, get_formas_pagamento
     cats_saida   = get_config_saidas()["tipo"].dropna().unique().tolist()
     cats_entrada = get_config_entradas()["tipo"].dropna().unique().tolist()
     cats_filtro  = ["Todas"] + sorted(set(cats_saida + cats_entrada))
@@ -456,25 +458,97 @@ with st.expander("📋 Gerenciar Lançamentos", expanded=False):
             def _safe(val):
                 return str(val) if pd.notna(val) else ""
 
+            # ── Carrega as config tables para popular os dropdowns em cascata.
+            #    Mesma logica do form de Novo Lancamento (pages/01_Lancamentos.py):
+            #    Saida   = natureza → categoria → item + pagamento
+            #    Entrada = natureza → categoria (sem item, sem pagamento)
+            #    Antes os campos eram text_input livres, o que permitia digitar
+            #    categoria inexistente e quebrar a relacao com config_saidas
+            #    (gasto sem orcamento, item invalido, etc.).
+            edit_saidas_df   = get_config_saidas()
+            edit_entradas_df = get_config_entradas()
+            edit_pagamentos  = get_formas_pagamento()["nome"].tolist()
+
+            tipo_geral_row = row["tipo_geral"]
+            cfg_df = edit_saidas_df if tipo_geral_row == "Saida" else edit_entradas_df
+
+            # Keys com sufixo do eid forcam re-render quando se troca o
+            # lancamento sendo editado — sem isso o st.session_state mantem
+            # o valor do dropdown da edicao anterior e ignora o `index=`.
+            k = lambda nome: f"e_{nome}_{eid}"
+
             c1, c2, c3 = st.columns(3)
             with c1:
-                nova_cat  = st.text_input("Categoria", value=_safe(row["categoria"]), key="e_cat")
-                novo_item = st.text_input("Item",      value=_safe(row["item"]),       key="e_item")
+                # Natureza — base da cascata.
+                naturezas_disp = cfg_df["natureza"].dropna().unique().tolist()
+                nat_atual = _safe(row["natureza"])
+                nat_idx = naturezas_disp.index(nat_atual) if nat_atual in naturezas_disp else 0
+                nova_nat = st.selectbox(
+                    "Natureza", naturezas_disp, index=nat_idx, key=k("nat")
+                )
+
+                # Categoria filtrada pela natureza atual do widget.
+                cats_disp = cfg_df[cfg_df["natureza"] == nova_nat]["tipo"].dropna().unique().tolist()
+                cat_atual = _safe(row["categoria"])
+                cat_idx = cats_disp.index(cat_atual) if cat_atual in cats_disp else 0
+                nova_cat = st.selectbox(
+                    "Categoria", cats_disp, index=cat_idx, key=k("cat")
+                ) if cats_disp else None
+
+                # Item so existe para Saidas e quando ha itens cadastrados
+                # para essa combinacao natureza/tipo em config_saidas.
+                if tipo_geral_row == "Saida" and nova_cat:
+                    itens_disp = cfg_df[
+                        (cfg_df["natureza"] == nova_nat) &
+                        (cfg_df["tipo"] == nova_cat)
+                    ]["item"].dropna().tolist()
+                else:
+                    itens_disp = []
+
+                if itens_disp:
+                    item_atual = _safe(row["item"])
+                    item_idx = itens_disp.index(item_atual) if item_atual in itens_disp else 0
+                    novo_item = st.selectbox(
+                        "Item", itens_disp, index=item_idx, key=k("item")
+                    )
+                else:
+                    novo_item = None
+
             with c2:
-                novo_val  = st.number_input("Valor", value=float(row["valor"]),
-                                            min_value=0.0, format="%.0f", key="e_val")
-                novo_pgto = st.text_input("Pagamento", value=_safe(row["pagamento"]), key="e_pgto")
+                novo_val = st.number_input(
+                    "Valor", value=float(row["valor"]),
+                    min_value=0.0, format="%.0f", key=k("val")
+                )
+                # Pagamento so faz sentido para Saida.
+                if tipo_geral_row == "Saida":
+                    pgto_atual = _safe(row["pagamento"])
+                    pgto_idx = edit_pagamentos.index(pgto_atual) if pgto_atual in edit_pagamentos else 0
+                    novo_pgto = st.selectbox(
+                        "Pagamento", edit_pagamentos, index=pgto_idx, key=k("pgto")
+                    )
+                else:
+                    novo_pgto = None
+
             with c3:
-                nova_obs  = st.text_area("Observação", value=_safe(row["observacao"]), key="e_obs")
+                nova_obs = st.text_area(
+                    "Observação", value=_safe(row["observacao"]), key=k("obs")
+                )
 
             cs, cc = st.columns(2)
             with cs:
                 if st.button("💾 Salvar", type="primary", use_container_width=True, key="btn_salvar_lan"):
-                    valor_real = novo_val if row["tipo_geral"] == "Entrada" else -novo_val
+                    # natureza tambem vai no UPDATE: como agora pode ser
+                    # alterada no dropdown, precisa ser persistida — senao
+                    # ficaria divergente da categoria escolhida.
+                    valor_real = novo_val if tipo_geral_row == "Entrada" else -novo_val
                     update_lancamento(eid, {
-                        "categoria": nova_cat, "item": novo_item or None,
-                        "valor": novo_val, "pagamento": novo_pgto or None,
-                        "observacao": nova_obs or None, "valor_real": valor_real,
+                        "natureza":   nova_nat,
+                        "categoria":  nova_cat,
+                        "item":       novo_item,
+                        "valor":      novo_val,
+                        "pagamento":  novo_pgto,
+                        "observacao": nova_obs or None,
+                        "valor_real": valor_real,
                     })
                     st.session_state["editar_id"] = None
                     st.success("Lançamento atualizado!")
