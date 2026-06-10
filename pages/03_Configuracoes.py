@@ -344,16 +344,19 @@ with st.expander("📋 Gerenciar Lançamentos", expanded=False):
     # independente do tipo de lancamento selecionado.
     # get_formas_pagamento entra junto porque o form de edicao mais abaixo
     # precisa popular o dropdown de Pagamento com a tabela canonica.
-    from core.database import get_config_entradas, get_formas_pagamento
+    from core.database import get_config_entradas, get_formas_pagamento, CATS_INVESTIMENTO
     cats_saida   = get_config_saidas()["tipo"].dropna().unique().tolist()
     cats_entrada = get_config_entradas()["tipo"].dropna().unique().tolist()
-    cats_filtro  = ["Todas"] + sorted(set(cats_saida + cats_entrada))
+    # Categorias do modulo de investimentos entram no filtro para os registros
+    # (aportes/dividendos/saldo inicial) serem localizaveis aqui tambem —
+    # para households sem o modulo nao ha registros, o filtro so nao retorna nada.
+    cats_filtro  = ["Todas"] + sorted(set(cats_saida + cats_entrada + CATS_INVESTIMENTO))
 
     col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
         filtro_mes  = st.selectbox("Mês", meses_lista, key="cfg_mes")
     with col2:
-        filtro_tipo = st.selectbox("Tipo", ["Todos","Saida","Entrada"], key="cfg_tipo")
+        filtro_tipo = st.selectbox("Tipo", ["Todos","Saida","Entrada","Investimento"], key="cfg_tipo")
     with col3:
         # "Quem" derivado dinamicamente do household ativo (Etapa 3).
         membros_lan = ["Todos"] + get_membros_household()
@@ -450,6 +453,30 @@ with st.expander("📋 Gerenciar Lançamentos", expanded=False):
             eid = st.session_state["editar_id"]
             row = df[df["id"] == eid].iloc[0]
             st.markdown("---")
+
+            # ── Guard: registros do modulo de investimentos nao se editam aqui.
+            # Os dropdowns em cascata abaixo sao alimentados por config_saidas/
+            # config_entradas — que nao contem as categorias de investimento.
+            # Editar um aporte/dividendo por aqui trocaria a categoria por uma
+            # de gasto/renda silenciosamente (alem de recalcular valor_real
+            # errado para aportes, que devem ter valor_real=0).
+            eh_investimento = (
+                row["tipo_geral"] == "Investimento"
+                or row["categoria"] == "Dividendos"
+            )
+            if eh_investimento:
+                st.info(
+                    "💎 Este é um registro do módulo de **Investimentos**. "
+                    "Para corrigir: remova-o (aqui ou na página Investimentos → "
+                    "🗂️ Registros do ano) e registre novamente lá."
+                )
+                if st.button("OK, fechar", key="btn_fechar_edit_inv"):
+                    st.session_state["editar_id"] = None
+                    st.rerun()
+                # Esta secao e a ultima da pagina — interromper aqui nao
+                # esconde nenhum conteudo posterior.
+                st.stop()
+
             st.subheader(f"✏️ Editando lançamento #{eid}")
 
             # Helper: campos NULL no Postgres voltam como NaN no pandas.

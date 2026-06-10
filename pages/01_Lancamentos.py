@@ -222,7 +222,10 @@ if registrar:
                 )
 
             if tipo_geral == "Entrada":
-                total_ano = get_total_ano(categoria, item, ANO_APP)
+                # tipo_geral='Entrada' explicito: antes a funcao filtrava
+                # hardcoded por Saida e o total acumulado de entradas (ex.:
+                # salario) exibido aqui era sempre 0.
+                total_ano = get_total_ano(categoria, item, ANO_APP, tipo_geral="Entrada")
                 st.session_state.feedback_msg = (
                     f"Entrada de SGD {valor:,.0f} em {chave} registrada!\n\n"
                     f"Total acumulado no ano: SGD {total_ano:,.0f}."

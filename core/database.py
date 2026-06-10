@@ -198,7 +198,20 @@ def inserir_lancamento(d, household_id=None):
              categoria, item, valor, pagamento, observacao, valor_real, nro_mes, household_id)
         VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
     """
-    valor_real = d["valor"] if d["tipo_geral"] == "Entrada" else -d["valor"]
+    # valor_real e o impacto no FLUXO DE CAIXA do household:
+    #   Entrada      -> +valor (dinheiro novo na conta)
+    #   Saida        -> -valor (dinheiro que saiu de verdade)
+    #   Investimento -> 0      (aporte conta->corretora: o dinheiro continua
+    #                           sendo do casal, so mudou de endereco. O salario
+    #                           cheio ja foi contado como Entrada; se o aporte
+    #                           contasse como -valor, a poupanca acumulada do
+    #                           Dashboard cairia indevidamente a cada aporte.)
+    if d["tipo_geral"] == "Entrada":
+        valor_real = d["valor"]
+    elif d["tipo_geral"] == "Investimento":
+        valor_real = 0
+    else:
+        valor_real = -d["valor"]
     execute(sql, (
         d["data"], d["mes"], d["ano"], d["quem"], d["tipo_geral"],
         d["natureza"], d["quem"], d["categoria"], d.get("item"),
@@ -310,12 +323,18 @@ def get_consulta_saldo(categoria, item, nro_mes, ano, household_id=None):
     }
 
 
-def get_total_ano(categoria, item, ano, household_id=None):
+def get_total_ano(categoria, item, ano, tipo_geral="Saida", household_id=None):
+    """
+    Total do ano de uma categoria. tipo_geral parametrizado (default 'Saida'
+    preserva o comportamento das chamadas existentes) — antes era hardcoded
+    'Saida', o que fazia o "total acumulado no ano" exibido apos registrar
+    uma ENTRADA (ex.: salario) retornar sempre 0.
+    """
     hh = _hh(household_id)
     return float(query_df(
         "SELECT COALESCE(SUM(valor),0) AS v FROM lancamentos "
-        "WHERE household_id=%s AND tipo_geral='Saida' AND categoria=%s AND (item=%s OR item IS NULL) AND ano=%s",
-        [hh, categoria, item if item else None, ano]
+        "WHERE household_id=%s AND tipo_geral=%s AND categoria=%s AND (item=%s OR item IS NULL) AND ano=%s",
+        [hh, tipo_geral, categoria, item if item else None, ano]
     )["v"].values[0])
 
 
@@ -579,11 +598,24 @@ def resetar_senha(id, nova_senha, household_id=None):
 
 # ── DASHBOARD ─────────────────────────────────────────────────────────────
 def get_resumo_mensal(ano=2026, quem=None, natureza=None, household_id=None):
+    """
+    Serie mensal com entradas, saidas, saldo e investimentos (coluna propria —
+    aporte nao e entrada nem saida). Saldo inicial fica fora da serie mensal
+    de investimentos: e patrimonio pre-app ancorado em Janeiro, nao aporte
+    daquele mes (incluiria um degrau gigante no grafico).
+
+    O filtro de natureza se aplica so a Entrada/Saida: a serie de investimentos
+    permanece visivel em qualquer recorte (natureza='Investimento' e fixa nos
+    aportes, entao 'Pessoal'/'Profissional' a zerariam). O filtro `quem` se
+    aplica normalmente a tudo.
+    """
     hh = _hh(household_id)
     sql = """
         SELECT l.nro_mes, m.nome AS mes,
             SUM(CASE WHEN l.tipo_geral='Entrada' THEN l.valor ELSE 0 END) AS entradas,
             SUM(CASE WHEN l.tipo_geral='Saida'   THEN l.valor ELSE 0 END) AS saidas,
+            SUM(CASE WHEN l.tipo_geral='Investimento' AND l.categoria <> 'Saldo inicial'
+                     THEN l.valor ELSE 0 END) AS investimentos,
             SUM(CASE WHEN l.tipo_geral='Entrada' THEN l.valor ELSE 0 END) -
             SUM(CASE WHEN l.tipo_geral='Saida'   THEN l.valor ELSE 0 END) AS saldo
         FROM lancamentos l
@@ -591,8 +623,12 @@ def get_resumo_mensal(ano=2026, quem=None, natureza=None, household_id=None):
         WHERE l.household_id=%s AND l.ano=%s
     """
     params = [hh, ano]
-    if quem:     sql += " AND l.quem=%s";     params.append(quem)
-    if natureza: sql += " AND l.natureza=%s"; params.append(natureza)
+    if quem:
+        sql += " AND l.quem=%s"
+        params.append(quem)
+    if natureza:
+        sql += " AND (l.natureza=%s OR l.tipo_geral='Investimento')"
+        params.append(natureza)
     return query_df(sql + " GROUP BY l.nro_mes, m.nome ORDER BY l.nro_mes", params)
 
 
@@ -643,3 +679,213 @@ def get_saldo_acumulado(ano=2026, natureza=None, household_id=None):
         JOIN meses m ON m.nro = sub.nro_mes
         ORDER BY sub.nro_mes
     """, params)
+
+
+# ── INVESTIMENTOS (modulo "dinheiro guardado") ────────────────────────────
+# Habilitado por household via households.investimentos_ativo (hoje so Admin).
+#
+# Convencao de armazenamento — reusa `lancamentos`, sem tabela de movimentos
+# propria (edicao, exclusao e isolamento por household ja funcionam de graca):
+#
+#   Aporte fixo:    tipo_geral='Investimento', natureza='Investimento',
+#                   categoria='Aporte fixo',     item=<produto>, valor_real=0
+#   Aporte variavel:tipo_geral='Investimento', natureza='Investimento',
+#                   categoria='Aporte variável', item=<produto|NULL>, valor_real=0
+#   Saldo inicial:  tipo_geral='Investimento', natureza='Investimento',
+#                   categoria='Saldo inicial',   item=<produto|NULL>, valor_real=0
+#   Dividendo:      tipo_geral='Entrada',      natureza='Pessoal',
+#                   categoria='Dividendos',      item=<origem|NULL>, valor_real=+valor
+#
+# Racional financeiro: aporte e transferencia conta->corretora — o salario
+# CHEIO ja entrou como Entrada, entao o aporte nao e nem entrada nem saida
+# (valor_real=0 mantem a poupanca do Dashboard intacta). Dividendo cai na
+# conta corrente, logo E renda real do mes: entra como Entrada normal e
+# tambem aparece no modulo como renda passiva.
+#
+# A lista de produtos de aporte fixo (ex.: 'Manu 4k' -> 4166/mes) vive em
+# `config_investimentos` — permite registrar o pacote do mes em 1 clique.
+
+CAT_APORTE_FIXO   = "Aporte fixo"
+CAT_APORTE_VAR    = "Aporte variável"
+CAT_SALDO_INICIAL = "Saldo inicial"
+CAT_DIVIDENDOS    = "Dividendos"
+CATS_INVESTIMENTO = [CAT_APORTE_FIXO, CAT_APORTE_VAR, CAT_SALDO_INICIAL, CAT_DIVIDENDOS]
+
+
+def get_investimentos_ativo(household_id=None) -> bool:
+    """
+    True se o household atual tem o modulo de investimentos habilitado.
+    Falha FECHADO (False) para qualquer erro — inclusive a janela de deploy
+    em que o codigo novo roda antes da migration que cria a coluna: nesse
+    caso o app continua de pe, apenas sem exibir a pagina de investimentos.
+    """
+    try:
+        hh = _hh(household_id)
+        df = query_df("SELECT investimentos_ativo FROM households WHERE id=%s", [hh])
+        return bool(df["investimentos_ativo"].values[0]) if not df.empty else False
+    except Exception:
+        return False
+
+
+# ── Config de produtos de investimento ────────────────────────────────────
+# Dois tipos de produto:
+#   'fixo'     -> valor mensal que nunca muda (ex.: 'Manu 4k' = 4166/mes).
+#                 Entram no botao de registro em lote ("cliquei, pago").
+#   'variavel' -> produto cadastrado sem valor fixo; quando o usuario manda
+#                 dinheiro, escolhe o produto no aporte avulso e digita o valor.
+def get_config_investimentos(somente_ativos=True, tipo=None, household_id=None):
+    """Produtos do household. tipo='fixo'|'variavel' filtra; None traz todos."""
+    hh = _hh(household_id)
+    sql = ("SELECT id, nome, valor_fixo, tipo, ativo, ordem "
+           "FROM config_investimentos WHERE household_id=%s")
+    params = [hh]
+    if somente_ativos:
+        sql += " AND ativo = TRUE"
+    if tipo is not None:
+        sql += " AND tipo = %s"
+        params.append(tipo)
+    sql += " ORDER BY ordem, nome"
+    return query_df(sql, params)
+
+
+def add_config_investimento(nome, valor_fixo, tipo="fixo", household_id=None):
+    """
+    Cadastra produto novo. Para tipo='variavel' o valor_fixo e gravado como 0 —
+    o valor real e informado a cada aporte avulso.
+    """
+    hh = _hh(household_id)
+    execute(
+        "INSERT INTO config_investimentos (nome, valor_fixo, tipo, household_id) "
+        "VALUES (%s, %s, %s, %s)",
+        [nome.strip(), valor_fixo if tipo == "fixo" else 0, tipo, hh],
+    )
+
+
+def update_config_investimento(id, campos, household_id=None):
+    """
+    Atualiza produto (valor_fixo, ativo, nome, ordem). Mudar valor_fixo NAO
+    altera aportes ja registrados — eles guardam o valor historico da epoca.
+    """
+    hh = _hh(household_id)
+    sets = ", ".join([f"{k} = %s" for k in campos.keys()])
+    execute(
+        f"UPDATE config_investimentos SET {sets} WHERE id = %s AND household_id = %s",
+        list(campos.values()) + [id, hh],
+    )
+
+
+# ── Registro de aportes ───────────────────────────────────────────────────
+def get_aportes_fixos_registrados_no_mes(nro_mes, ano, household_id=None):
+    """
+    Nomes de produtos (coluna item) que JA tem aporte fixo no mes/ano — usado
+    para a protecao anti-duplicacao do botao "registrar aportes do mes".
+    """
+    hh = _hh(household_id)
+    df = query_df(
+        "SELECT DISTINCT item FROM lancamentos "
+        "WHERE household_id=%s AND tipo_geral='Investimento' AND categoria=%s "
+        "AND nro_mes=%s AND ano=%s AND item IS NOT NULL",
+        [hh, CAT_APORTE_FIXO, nro_mes, ano],
+    )
+    return df["item"].tolist()
+
+
+def registrar_aportes_fixos(quem, mes_nome, nro_mes, ano, produtos, household_id=None):
+    """
+    Insere em lote os aportes fixos do mes. `produtos` = lista de dicts
+    {'nome': str, 'valor_fixo': float}. Retorna a quantidade inserida.
+    Cada aporte vira um lancamento individual (1 por produto) para permitir
+    analise por produto e exclusao granular depois.
+    """
+    from datetime import date as _date
+    hh = _hh(household_id)
+    for p in produtos:
+        inserir_lancamento({
+            "data": _date.today(), "mes": mes_nome, "ano": ano,
+            "quem": quem, "tipo_geral": "Investimento",
+            "natureza": "Investimento", "categoria": CAT_APORTE_FIXO,
+            "item": p["nome"], "valor": p["valor_fixo"],
+            "pagamento": None, "observacao": None, "nro_mes": nro_mes,
+        }, household_id=hh)
+    return len(produtos)
+
+
+# ── Consultas do modulo ───────────────────────────────────────────────────
+def get_investimentos_mensal(ano=2026, household_id=None):
+    """
+    Serie mensal do modulo: aporte_fixo, aporte_variavel e dividendos por mes.
+    Saldo inicial fica FORA — e ponto de partida do patrimonio, nao fluxo
+    do mes (incluir distorceria o grafico de aportes).
+    """
+    hh = _hh(household_id)
+    return query_df("""
+        SELECT l.nro_mes, m.nome AS mes,
+            SUM(CASE WHEN l.tipo_geral='Investimento' AND l.categoria=%s
+                     THEN l.valor ELSE 0 END) AS aporte_fixo,
+            SUM(CASE WHEN l.tipo_geral='Investimento' AND l.categoria=%s
+                     THEN l.valor ELSE 0 END) AS aporte_variavel,
+            SUM(CASE WHEN l.tipo_geral='Entrada' AND l.categoria=%s
+                     THEN l.valor ELSE 0 END) AS dividendos
+        FROM lancamentos l
+        JOIN meses m ON m.nro = l.nro_mes
+        WHERE l.household_id=%s AND l.ano=%s
+          AND (l.tipo_geral='Investimento' OR
+               (l.tipo_geral='Entrada' AND l.categoria=%s))
+          AND l.categoria <> %s
+        GROUP BY l.nro_mes, m.nome
+        ORDER BY l.nro_mes
+    """, [CAT_APORTE_FIXO, CAT_APORTE_VAR, CAT_DIVIDENDOS,
+          hh, ano, CAT_DIVIDENDOS, CAT_SALDO_INICIAL])
+
+
+def get_total_investido(household_id=None):
+    """
+    Total guardado = saldo inicial + soma de TODOS os aportes (todos os anos).
+    Dividendos NAO entram: eles sairam da corretora para a conta corrente —
+    se forem reinvestidos, o usuario registra um aporte variavel e ai sim
+    voltam a contar.
+    """
+    hh = _hh(household_id)
+    return float(query_df(
+        "SELECT COALESCE(SUM(valor),0) AS v FROM lancamentos "
+        "WHERE household_id=%s AND tipo_geral='Investimento'",
+        [hh])["v"].values[0])
+
+
+def get_investido_por_produto(household_id=None):
+    """
+    Total guardado por produto (saldo inicial + aportes, todos os anos).
+    item NULL agrupa como 'Geral'. Ordenado do maior para o menor.
+    """
+    hh = _hh(household_id)
+    return query_df(
+        "SELECT COALESCE(item, 'Geral') AS produto, SUM(valor) AS total "
+        "FROM lancamentos WHERE household_id=%s AND tipo_geral='Investimento' "
+        "GROUP BY COALESCE(item, 'Geral') ORDER BY total DESC",
+        [hh])
+
+
+def get_saldo_inicial_investimentos(household_id=None):
+    """Soma dos registros de saldo inicial (0.0 se ainda nao registrado)."""
+    hh = _hh(household_id)
+    return float(query_df(
+        "SELECT COALESCE(SUM(valor),0) AS v FROM lancamentos "
+        "WHERE household_id=%s AND tipo_geral='Investimento' AND categoria=%s",
+        [hh, CAT_SALDO_INICIAL])["v"].values[0])
+
+
+def get_registros_investimentos(ano=2026, household_id=None):
+    """
+    Todos os registros do modulo no ano (aportes, saldo inicial e dividendos)
+    para a tabela de gestao da pagina — inclui id para exclusao granular.
+    """
+    hh = _hh(household_id)
+    return query_df("""
+        SELECT id, data, mes, nro_mes, quem, tipo_geral, categoria, item,
+               valor, observacao
+        FROM lancamentos
+        WHERE household_id=%s AND ano=%s
+          AND (tipo_geral='Investimento' OR
+               (tipo_geral='Entrada' AND categoria=%s))
+        ORDER BY nro_mes DESC, categoria, item
+    """, [hh, ano, CAT_DIVIDENDOS])

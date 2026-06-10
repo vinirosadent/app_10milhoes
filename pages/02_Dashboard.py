@@ -20,6 +20,7 @@ C_ENTRADA = "#2E7D32"
 C_SAIDA   = "#C62828"
 C_SALDO   = "#1565C0"
 C_AVISO   = "#E65100"
+C_INVEST  = "#F9A825"   # dourado — investimento e categoria propria (nem entrada nem saida)
 PALETTE   = ["#1565C0","#2E7D32","#E65100","#6A1B9A","#00838F",
              "#AD1457","#F57F17","#558B2F","#4527A0","#00695C"]
 
@@ -37,6 +38,11 @@ with st.sidebar:
 
 quem_param = None if quem_sel == "Todos" else quem_sel
 nat_param  = None if nat_sel  == "Todos" else nat_sel
+
+# Modulo de investimentos ativo? (flag por household, cacheada pelo app.py).
+# Controla a exibicao da serie/metrica de investimentos — para households sem
+# o modulo (Ladroes) o Dashboard fica identico ao que era antes.
+tem_inv = st.session_state.get("investimentos_ativo", False)
 
 # ── Dados base ────────────────────────────────────────────────────────────
 df_mensal     = get_resumo_mensal(ano_sel, quem_param, nat_param)
@@ -75,12 +81,22 @@ with tab1:
     else:
         total_ent = int(df_mensal["entradas"].sum())
         total_sai = int(df_mensal["saidas"].sum())
+        total_inv = int(df_mensal["investimentos"].sum())
         poupanca  = total_ent - total_sai
         perc_p    = round(poupanca/total_ent*100,1) if total_ent>0 else 0
         mes_caro  = df_mensal.loc[df_mensal["saidas"].idxmax()]
         mes_barat = df_mensal.loc[df_mensal["saidas"].idxmin()]
 
-        c1,c2,c3,c4,c5 = st.columns(5)
+        # Com o modulo de investimentos ativo entra a 6a metrica (Investido
+        # YTD) logo apos a Poupanca — o investimento e um DESTINO da poupanca,
+        # entao a leitura natural e "poupei X, guardei Y disso".
+        if tem_inv:
+            c1,c2,c3,c6,c4,c5 = st.columns(6)
+            perc_i = round(total_inv/total_ent*100,1) if total_ent>0 else 0
+            c6.metric("💎 Investido YTD", f"SGD {total_inv:,}",
+                      delta=f"{perc_i}% das entradas")
+        else:
+            c1,c2,c3,c4,c5 = st.columns(5)
         c1.metric("💰 Entradas YTD",    f"SGD {total_ent:,}")
         c2.metric("💸 Saídas YTD",      f"SGD {total_sai:,}")
         c3.metric("🏦 Poupança YTD",    f"SGD {poupanca:,}", delta=f"{perc_p}% das entradas")
@@ -99,6 +115,12 @@ with tab1:
             fig.add_trace(go.Bar(x=df_mensal["mes"], y=df_mensal["saidas"],
                 name="Saídas", marker_color=C_SAIDA,
                 hovertemplate="<b>%{x}</b><br>Saídas: SGD %{y:,}<extra></extra>"))
+            # 3a barra (dourada): quanto da poupanca do mes virou aporte.
+            # So aparece para household com o modulo de investimentos.
+            if tem_inv and total_inv > 0:
+                fig.add_trace(go.Bar(x=df_mensal["mes"], y=df_mensal["investimentos"],
+                    name="Investimentos", marker_color=C_INVEST,
+                    hovertemplate="<b>%{x}</b><br>Investimentos: SGD %{y:,}<extra></extra>"))
             fig.update_layout(barmode="group")
             fig.update_yaxes(tickprefix="SGD ")
             st.plotly_chart(fmt(fig), use_container_width=True)
@@ -143,9 +165,16 @@ with tab2:
             row    = df_mes.iloc[0]
             ent_m  = int(row["entradas"])
             sai_m  = int(row["saidas"])
+            inv_m  = int(row["investimentos"])
             poup_m = ent_m - sai_m
 
-            c1,c2,c3 = st.columns(3)
+            # Investido do mes como metrica propria quando o modulo esta ativo
+            # (mesma logica da Visao Geral: investimento nao e saida).
+            if tem_inv:
+                c1,c2,c3,c4 = st.columns(4)
+                c4.metric("💎 Investido", f"SGD {inv_m:,}")
+            else:
+                c1,c2,c3 = st.columns(3)
             c1.metric("Entradas",  f"SGD {ent_m:,}")
             c2.metric("Saídas",    f"SGD {sai_m:,}")
             c3.metric("Poupança",  f"SGD {poup_m:,}",
@@ -153,11 +182,18 @@ with tab2:
 
             st.markdown("---")
             st.markdown(f"#### Resumo — {mes_sel}")
+            barras_x = ["Entradas","Saídas","Poupança"]
+            barras_y = [ent_m, sai_m, poup_m]
+            barras_c = [C_ENTRADA, C_SAIDA, C_ENTRADA if poup_m>=0 else C_SAIDA]
+            if tem_inv:
+                barras_x.append("Investido")
+                barras_y.append(inv_m)
+                barras_c.append(C_INVEST)
             fig_r = go.Figure(go.Bar(
-                x=["Entradas","Saídas","Poupança"],
-                y=[ent_m, sai_m, poup_m],
-                marker_color=[C_ENTRADA, C_SAIDA, C_ENTRADA if poup_m>=0 else C_SAIDA],
-                text=[f"SGD {ent_m:,}",f"SGD {sai_m:,}",f"SGD {poup_m:,}"],
+                x=barras_x,
+                y=barras_y,
+                marker_color=barras_c,
+                text=[f"SGD {v:,}" for v in barras_y],
                 textposition="outside",
                 hovertemplate="<b>%{x}</b><br>SGD %{y:,}<extra></extra>"
             ))

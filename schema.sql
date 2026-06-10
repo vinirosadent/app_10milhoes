@@ -50,6 +50,10 @@ CREATE TABLE IF NOT EXISTS households (
     -- por Ricardo+Josi — esses nomes vivem aqui, nao em usuarios (que so
     -- guarda os 2 LOGINS, nao as 4 pessoas que usam o app).
     membros   TEXT[]      DEFAULT ARRAY[]::TEXT[],
+    -- Modulo de investimentos (pagina 04, aportes/dividendos/total guardado).
+    -- Feature por household: TRUE so para Admin (migration
+    -- add_investimentos_modulo). Ladroes nem veem a pagina.
+    investimentos_ativo BOOLEAN NOT NULL DEFAULT FALSE,
     criado_em TIMESTAMP DEFAULT NOW()
 );
 
@@ -139,6 +143,13 @@ CREATE TABLE IF NOT EXISTS lancamentos (
     household_id  INTEGER REFERENCES households(id)
 );
 
+-- Convencao do modulo de INVESTIMENTOS (sem tabela de movimentos propria —
+-- os registros vivem em lancamentos):
+--   tipo_geral='Investimento' + categoria 'Aporte fixo'/'Aporte variável'/
+--   'Saldo inicial' (item = produto; valor_real=0 pois aporte e realocacao
+--   conta->corretora, nao saida) e dividendos como tipo_geral='Entrada' +
+--   categoria 'Dividendos' (caem na conta = renda real do mes).
+
 CREATE INDEX IF NOT EXISTS idx_lan_ano               ON lancamentos(ano);
 CREATE INDEX IF NOT EXISTS idx_lan_mes               ON lancamentos(nro_mes);
 CREATE INDEX IF NOT EXISTS idx_lan_quem              ON lancamentos(quem);
@@ -146,6 +157,30 @@ CREATE INDEX IF NOT EXISTS idx_lan_tipo              ON lancamentos(tipo_geral);
 CREATE INDEX IF NOT EXISTS idx_lan_natureza          ON lancamentos(natureza);
 CREATE INDEX IF NOT EXISTS idx_lan_categoria         ON lancamentos(categoria);
 CREATE INDEX IF NOT EXISTS idx_lan_household_ano_mes ON lancamentos(household_id, ano, nro_mes);
+
+-- ─────────────────────────────────────────────────────────────
+-- CONFIG_INVESTIMENTOS — produtos de investimento do modulo (pagina 04).
+-- tipo='fixo': valor mensal imutavel (ex.: 'Manu 4k' -> 4166.00), entra no
+--              botao de registro em lote do mes.
+-- tipo='variavel': so o nome e cadastrado; o valor e digitado a cada aporte
+--              avulso (investimentos sem mensalidade fixa).
+-- Mudar valor_fixo NAO reescreve aportes ja registrados (valor historico
+-- fica gravado no lancamento).
+-- ─────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS config_investimentos (
+    id           SERIAL PRIMARY KEY,
+    nome         VARCHAR(100)  NOT NULL,
+    valor_fixo   NUMERIC(12,2) NOT NULL DEFAULT 0,
+    tipo         VARCHAR(10)   NOT NULL DEFAULT 'fixo'
+                 CHECK (tipo IN ('fixo','variavel')),
+    ativo        BOOLEAN       NOT NULL DEFAULT TRUE,
+    ordem        INTEGER       DEFAULT 99,
+    household_id INTEGER       NOT NULL REFERENCES households(id),
+    criado_em    TIMESTAMP     DEFAULT NOW(),
+    UNIQUE (household_id, nome)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cfginv_household ON config_investimentos(household_id);
 
 -- ─────────────────────────────────────────────────────────────
 -- RLS — defesa em profundidade. O isolamento real e por codigo (filtro
@@ -160,3 +195,4 @@ ALTER TABLE orcamento         ENABLE ROW LEVEL SECURITY;
 ALTER TABLE lancamentos       ENABLE ROW LEVEL SECURITY;
 ALTER TABLE usuarios          ENABLE ROW LEVEL SECURITY;
 ALTER TABLE households        ENABLE ROW LEVEL SECURITY;
+ALTER TABLE config_investimentos ENABLE ROW LEVEL SECURITY;
