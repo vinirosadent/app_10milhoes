@@ -734,9 +734,11 @@ def get_investimentos_ativo(household_id=None) -> bool:
 #   'variavel' -> produto cadastrado sem valor fixo; quando o usuario manda
 #                 dinheiro, escolhe o produto no aporte avulso e digita o valor.
 def get_config_investimentos(somente_ativos=True, tipo=None, household_id=None):
-    """Produtos do household. tipo='fixo'|'variavel' filtra; None traz todos."""
+    """Produtos do household. tipo='fixo'|'variavel' filtra; None traz todos.
+    `data_inicio` (DATE) = mes em que o plano comecou a aportar — usado para
+    saber a partir de quando a serie de aportes existe."""
     hh = _hh(household_id)
-    sql = ("SELECT id, nome, valor_fixo, tipo, ativo, ordem "
+    sql = ("SELECT id, nome, valor_fixo, tipo, ativo, ordem, data_inicio "
            "FROM config_investimentos WHERE household_id=%s")
     params = [hh]
     if somente_ativos:
@@ -748,16 +750,17 @@ def get_config_investimentos(somente_ativos=True, tipo=None, household_id=None):
     return query_df(sql, params)
 
 
-def add_config_investimento(nome, valor_fixo, tipo="fixo", household_id=None):
+def add_config_investimento(nome, valor_fixo, tipo="fixo", data_inicio=None, household_id=None):
     """
     Cadastra produto novo. Para tipo='variavel' o valor_fixo e gravado como 0 —
-    o valor real e informado a cada aporte avulso.
+    o valor real e informado a cada aporte avulso. `data_inicio` (opcional) marca
+    o mes em que o plano comecou a aportar.
     """
     hh = _hh(household_id)
     execute(
-        "INSERT INTO config_investimentos (nome, valor_fixo, tipo, household_id) "
-        "VALUES (%s, %s, %s, %s)",
-        [nome.strip(), valor_fixo if tipo == "fixo" else 0, tipo, hh],
+        "INSERT INTO config_investimentos (nome, valor_fixo, tipo, data_inicio, household_id) "
+        "VALUES (%s, %s, %s, %s, %s)",
+        [nome.strip(), valor_fixo if tipo == "fixo" else 0, tipo, data_inicio, hh],
     )
 
 
@@ -813,29 +816,47 @@ def registrar_aportes_fixos(quem, mes_nome, nro_mes, ano, produtos, household_id
 # ── Consultas do modulo ───────────────────────────────────────────────────
 def get_investimentos_mensal(ano=2026, household_id=None):
     """
-    Serie mensal do modulo: aporte_fixo, aporte_variavel e dividendos por mes.
-    Saldo inicial fica FORA — e ponto de partida do patrimonio, nao fluxo
-    do mes (incluir distorceria o grafico de aportes).
+    Serie mensal do modulo NO ANO informado: aporte_fixo, aporte_variavel
+    (de `lancamentos`) + dividendos e rendimentos (da tabela
+    `investimentos_serie`). Saldo inicial fica FORA (e baseline do patrimonio,
+    nao fluxo do mes). Retorna so os meses com algum movimento.
+
+    Dividendo e rendimento vivem em `investimentos_serie` (nao em lancamentos)
+    de proposito: assim NAO entram no fluxo de caixa do Dashboard. Por isso o
+    join e por (ano, nro_mes) com a serie.
     """
     hh = _hh(household_id)
     return query_df("""
-        SELECT l.nro_mes, m.nome AS mes,
-            SUM(CASE WHEN l.tipo_geral='Investimento' AND l.categoria=%s
-                     THEN l.valor ELSE 0 END) AS aporte_fixo,
-            SUM(CASE WHEN l.tipo_geral='Investimento' AND l.categoria=%s
-                     THEN l.valor ELSE 0 END) AS aporte_variavel,
-            SUM(CASE WHEN l.tipo_geral='Entrada' AND l.categoria=%s
-                     THEN l.valor ELSE 0 END) AS dividendos
-        FROM lancamentos l
-        JOIN meses m ON m.nro = l.nro_mes
-        WHERE l.household_id=%s AND l.ano=%s
-          AND (l.tipo_geral='Investimento' OR
-               (l.tipo_geral='Entrada' AND l.categoria=%s))
-          AND l.categoria <> %s
-        GROUP BY l.nro_mes, m.nome
-        ORDER BY l.nro_mes
-    """, [CAT_APORTE_FIXO, CAT_APORTE_VAR, CAT_DIVIDENDOS,
-          hh, ano, CAT_DIVIDENDOS, CAT_SALDO_INICIAL])
+        WITH ap AS (
+            SELECT l.nro_mes,
+                SUM(CASE WHEN l.categoria=%s THEN l.valor ELSE 0 END) AS aporte_fixo,
+                SUM(CASE WHEN l.categoria=%s THEN l.valor ELSE 0 END) AS aporte_variavel
+            FROM lancamentos l
+            WHERE l.household_id=%s AND l.ano=%s AND l.tipo_geral='Investimento'
+              AND l.categoria IN (%s,%s)
+            GROUP BY l.nro_mes
+        ),
+        di AS (
+            SELECT nro_mes,
+                   SUM(dividendo)  AS dividendos,
+                   SUM(rendimento) AS rendimentos
+            FROM investimentos_serie
+            WHERE household_id=%s AND ano=%s
+            GROUP BY nro_mes
+        )
+        SELECT m.nro AS nro_mes, m.nome AS mes,
+            COALESCE(ap.aporte_fixo, 0)      AS aporte_fixo,
+            COALESCE(ap.aporte_variavel, 0)  AS aporte_variavel,
+            COALESCE(di.dividendos, 0)       AS dividendos,
+            COALESCE(di.rendimentos, 0)      AS rendimentos
+        FROM meses m
+        LEFT JOIN ap ON ap.nro_mes = m.nro
+        LEFT JOIN di ON di.nro_mes = m.nro
+        WHERE COALESCE(ap.aporte_fixo,0) <> 0 OR COALESCE(ap.aporte_variavel,0) <> 0
+           OR COALESCE(di.dividendos,0) <> 0 OR COALESCE(di.rendimentos,0) <> 0
+        ORDER BY m.nro
+    """, [CAT_APORTE_FIXO, CAT_APORTE_VAR, hh, ano, CAT_APORTE_FIXO, CAT_APORTE_VAR,
+          hh, ano])
 
 
 def get_total_investido(household_id=None):
@@ -889,3 +910,192 @@ def get_registros_investimentos(ano=2026, household_id=None):
                (tipo_geral='Entrada' AND categoria=%s))
         ORDER BY nro_mes DESC, categoria, item
     """, [hh, ano, CAT_DIVIDENDOS])
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# SERIE MENSAL DE INVESTIMENTOS (rendimento + dividendo) — tabela propria
+# ══════════════════════════════════════════════════════════════════════════
+# `investimentos_serie` guarda, por produto e por mes, o RENDIMENTO (valorizacao
+# da carteira, pode ser + ou -) e o DIVIDENDO recebido. Vive FORA de
+# `lancamentos` de proposito:
+#   - rendimento e valorizacao, nao movimento de caixa;
+#   - dividendo aqui e tratado como renda do investimento (acompanhada no modulo),
+#     nao como Entrada do mes — assim o Dashboard de fluxo de caixa de 2026 nao e
+#     afetado por dividendos historicos. (Se um dia quiser que dividendo conte como
+#     renda real, basta tambem inserir um lancamento Entrada — decisao separada.)
+#
+# Modelo financeiro do modulo, agora completo:
+#   Total aportado (custo)   = saldo inicial + Σ aportes        (de `lancamentos`)
+#   Rendimento total         = Σ rendimento                     (de `investimentos_serie`)
+#   PATRIMONIO (valor mkt)   = Total aportado + Rendimento total
+#   Dividendos recebidos     = Σ dividendo                      (de `investimentos_serie`)
+
+def get_total_rendimento(household_id=None):
+    """Rendimento acumulado de todos os tempos (valorizacao +/- da carteira)."""
+    hh = _hh(household_id)
+    return float(query_df(
+        "SELECT COALESCE(SUM(rendimento),0) AS v FROM investimentos_serie WHERE household_id=%s",
+        [hh])["v"].values[0])
+
+
+def get_total_dividendos(household_id=None):
+    """Total de dividendos recebidos (todos os anos)."""
+    hh = _hh(household_id)
+    return float(query_df(
+        "SELECT COALESCE(SUM(dividendo),0) AS v FROM investimentos_serie WHERE household_id=%s",
+        [hh])["v"].values[0])
+
+
+def get_aportado_no_ano(ano, household_id=None):
+    """Aportes (fixo + variavel) feitos no ano — exclui saldo inicial."""
+    hh = _hh(household_id)
+    return float(query_df(
+        "SELECT COALESCE(SUM(valor),0) AS v FROM lancamentos "
+        "WHERE household_id=%s AND tipo_geral='Investimento' AND ano=%s AND categoria IN (%s,%s)",
+        [hh, ano, CAT_APORTE_FIXO, CAT_APORTE_VAR])["v"].values[0])
+
+
+def _evolucao_frame(ap, sr, saldo_ini):
+    """
+    Monta a serie mensal CONTINUA (sem buracos) a partir de:
+      ap = DataFrame [ano, nro_mes, aporte]   (aportes de lancamentos)
+      sr = DataFrame [ano, nro_mes, rendimento, dividendo]  (da serie)
+    Calcula os acumulados em pandas (logica simples de seguir):
+      aporte_acum     = saldo inicial + soma corrida dos aportes
+      rendimento_acum = soma corrida dos rendimentos
+      patrimonio      = aporte_acum + rendimento_acum   (= valor de mercado)
+    """
+    cols = ["periodo", "ano", "nro_mes", "aporte", "rendimento", "dividendo",
+            "aporte_acum", "rendimento_acum", "patrimonio", "dividendo_acum"]
+
+    def _periodo(df):
+        if df.empty:
+            df = df.copy()
+            df["periodo"] = pd.to_datetime([])
+            return df
+        df = df.copy()
+        df["periodo"] = pd.to_datetime(dict(year=df["ano"], month=df["nro_mes"], day=1))
+        return df
+
+    ap, sr = _periodo(ap), _periodo(sr)
+    periodos = pd.concat([ap.get("periodo", pd.Series(dtype="datetime64[ns]")),
+                          sr.get("periodo", pd.Series(dtype="datetime64[ns]"))])
+    if periodos.empty:
+        return pd.DataFrame(columns=cols)
+
+    # Spine: um ponto por mes, do 1o ao ultimo dado — sem buracos na curva.
+    spine = pd.date_range(periodos.min(), periodos.max(), freq="MS")
+    out = pd.DataFrame({"periodo": spine})
+    a = ap.groupby("periodo")["aporte"].sum() if not ap.empty else pd.Series(dtype=float)
+    r = sr.groupby("periodo")["rendimento"].sum() if not sr.empty else pd.Series(dtype=float)
+    d = sr.groupby("periodo")["dividendo"].sum() if not sr.empty else pd.Series(dtype=float)
+    out["aporte"]     = out["periodo"].map(a).fillna(0.0).astype(float)
+    out["rendimento"] = out["periodo"].map(r).fillna(0.0).astype(float)
+    out["dividendo"]  = out["periodo"].map(d).fillna(0.0).astype(float)
+    out["ano"]     = out["periodo"].dt.year
+    out["nro_mes"] = out["periodo"].dt.month
+    out["aporte_acum"]     = saldo_ini + out["aporte"].cumsum()
+    out["rendimento_acum"] = out["rendimento"].cumsum()
+    out["patrimonio"]      = out["aporte_acum"] + out["rendimento_acum"]
+    out["dividendo_acum"]  = out["dividendo"].cumsum()
+    return out[cols]
+
+
+def get_investimentos_evolucao(household_id=None):
+    """
+    Serie mensal consolidada de TODOS os anos para os graficos de evolucao.
+    Colunas: periodo, ano, nro_mes, aporte, rendimento, dividendo,
+             aporte_acum, rendimento_acum, patrimonio, dividendo_acum.
+    """
+    hh = _hh(household_id)
+    ap = query_df(
+        "SELECT ano, nro_mes, SUM(valor) AS aporte FROM lancamentos "
+        "WHERE household_id=%s AND tipo_geral='Investimento' AND categoria IN (%s,%s) "
+        "GROUP BY ano, nro_mes",
+        [hh, CAT_APORTE_FIXO, CAT_APORTE_VAR])
+    sr = query_df(
+        "SELECT ano, nro_mes, SUM(rendimento) AS rendimento, SUM(dividendo) AS dividendo "
+        "FROM investimentos_serie WHERE household_id=%s GROUP BY ano, nro_mes",
+        [hh])
+    return _evolucao_frame(ap, sr, get_saldo_inicial_investimentos(hh))
+
+
+def get_investimentos_evolucao_produto(household_id=None):
+    """
+    Evolucao do VALOR por produto (para area empilhada). Colunas:
+    periodo, produto, valor — onde valor = soma corrida de (aporte + rendimento)
+    daquele produto ate o mes (valor de mercado do plano ao longo do tempo).
+    """
+    hh = _hh(household_id)
+    ap = query_df(
+        "SELECT ano, nro_mes, item AS produto, SUM(valor) AS aporte FROM lancamentos "
+        "WHERE household_id=%s AND tipo_geral='Investimento' AND categoria IN (%s,%s) "
+        "AND item IS NOT NULL GROUP BY ano, nro_mes, item",
+        [hh, CAT_APORTE_FIXO, CAT_APORTE_VAR])
+    sr = query_df(
+        "SELECT s.ano, s.nro_mes, c.nome AS produto, SUM(s.rendimento) AS rendimento "
+        "FROM investimentos_serie s JOIN config_investimentos c ON c.id = s.produto_id "
+        "WHERE s.household_id=%s GROUP BY s.ano, s.nro_mes, c.nome",
+        [hh])
+
+    if ap.empty and sr.empty:
+        return pd.DataFrame(columns=["periodo", "produto", "valor"])
+
+    for df in (ap, sr):
+        if not df.empty:
+            df["periodo"] = pd.to_datetime(dict(year=df["ano"], month=df["nro_mes"], day=1))
+
+    pmins = [d["periodo"].min() for d in (ap, sr) if not d.empty]
+    pmaxs = [d["periodo"].max() for d in (ap, sr) if not d.empty]
+    spine = pd.date_range(min(pmins), max(pmaxs), freq="MS")
+    produtos = sorted(set(
+        (ap["produto"].tolist() if not ap.empty else []) +
+        (sr["produto"].tolist() if not sr.empty else [])
+    ))
+
+    blocos = []
+    for prod in produtos:
+        a = (ap[ap["produto"] == prod].groupby("periodo")["aporte"].sum()
+             if not ap.empty else pd.Series(dtype=float))
+        r = (sr[sr["produto"] == prod].groupby("periodo")["rendimento"].sum()
+             if not sr.empty else pd.Series(dtype=float))
+        sub = pd.DataFrame({"periodo": spine})
+        sub["produto"] = prod
+        fluxo = sub["periodo"].map(a).fillna(0.0) + sub["periodo"].map(r).fillna(0.0)
+        sub["valor"] = fluxo.cumsum()
+        blocos.append(sub)
+    return pd.concat(blocos, ignore_index=True)
+
+
+def upsert_serie(produto_id, ano, nro_mes, rendimento=None, dividendo=None, household_id=None):
+    """
+    Insere/atualiza um ponto da serie (1 produto, 1 mes). Passe rendimento e/ou
+    dividendo; o campo que vier None NAO sobrescreve o valor ja gravado
+    (permite editar so o rendimento sem zerar o dividendo e vice-versa).
+    """
+    hh = _hh(household_id)
+    execute(
+        "INSERT INTO investimentos_serie "
+        "  (household_id, produto_id, ano, nro_mes, rendimento, dividendo) "
+        "VALUES (%s,%s,%s,%s, COALESCE(%s,0), COALESCE(%s,0)) "
+        "ON CONFLICT (household_id, produto_id, ano, nro_mes) DO UPDATE SET "
+        "  rendimento = COALESCE(%s, investimentos_serie.rendimento), "
+        "  dividendo  = COALESCE(%s, investimentos_serie.dividendo)",
+        [hh, produto_id, ano, nro_mes, rendimento, dividendo, rendimento, dividendo],
+    )
+
+
+def get_serie_df(household_id=None):
+    """Serie crua (com nome do produto e do mes) para a grade de edicao da pagina."""
+    hh = _hh(household_id)
+    return query_df(
+        "SELECT s.id, s.produto_id, c.nome AS produto, s.ano, s.nro_mes, "
+        "       m.nome AS mes, s.rendimento, s.dividendo "
+        "FROM investimentos_serie s "
+        "JOIN config_investimentos c ON c.id = s.produto_id "
+        "JOIN meses m ON m.nro = s.nro_mes "
+        "WHERE s.household_id=%s "
+        "ORDER BY s.ano DESC, s.nro_mes DESC, c.nome",
+        [hh])
+
+# Fim do modulo de investimentos.

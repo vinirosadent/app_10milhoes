@@ -175,12 +175,37 @@ CREATE TABLE IF NOT EXISTS config_investimentos (
                  CHECK (tipo IN ('fixo','variavel')),
     ativo        BOOLEAN       NOT NULL DEFAULT TRUE,
     ordem        INTEGER       DEFAULT 99,
+    -- data_inicio: mes em que o plano comecou a aportar. Usado para gerar a
+    -- serie historica de aportes (valor_fixo constante desde o inicio).
+    data_inicio  DATE,
     household_id INTEGER       NOT NULL REFERENCES households(id),
     criado_em    TIMESTAMP     DEFAULT NOW(),
     UNIQUE (household_id, nome)
 );
 
 CREATE INDEX IF NOT EXISTS idx_cfginv_household ON config_investimentos(household_id);
+
+-- ─────────────────────────────────────────────────────────────
+-- INVESTIMENTOS_SERIE — serie mensal por produto de RENDIMENTO e DIVIDENDO.
+-- Vive FORA de `lancamentos` de proposito:
+--   rendimento = valorizacao da carteira no mes (pode ser + ou -), NAO e caixa;
+--   dividendo  = renda do investimento acompanhada no modulo — NAO entra nas
+--                Entradas do Dashboard (evita inflar a poupanca de 2026).
+-- Patrimonio = (saldo inicial + Σ aportes de lancamentos) + Σ rendimento daqui.
+-- ─────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS investimentos_serie (
+    id           SERIAL        PRIMARY KEY,
+    household_id INTEGER       NOT NULL REFERENCES households(id),
+    produto_id   INTEGER       NOT NULL REFERENCES config_investimentos(id),
+    ano          INTEGER       NOT NULL,
+    nro_mes      INTEGER       NOT NULL REFERENCES meses(nro),
+    rendimento   NUMERIC(12,2) NOT NULL DEFAULT 0,
+    dividendo    NUMERIC(12,2) NOT NULL DEFAULT 0,
+    criado_em    TIMESTAMP     DEFAULT NOW(),
+    UNIQUE (household_id, produto_id, ano, nro_mes)
+);
+
+CREATE INDEX IF NOT EXISTS idx_invserie_hh ON investimentos_serie(household_id, ano, nro_mes);
 
 -- ─────────────────────────────────────────────────────────────
 -- RLS — defesa em profundidade. O isolamento real e por codigo (filtro
@@ -196,3 +221,4 @@ ALTER TABLE lancamentos       ENABLE ROW LEVEL SECURITY;
 ALTER TABLE usuarios          ENABLE ROW LEVEL SECURITY;
 ALTER TABLE households        ENABLE ROW LEVEL SECURITY;
 ALTER TABLE config_investimentos ENABLE ROW LEVEL SECURITY;
+ALTER TABLE investimentos_serie  ENABLE ROW LEVEL SECURITY;
