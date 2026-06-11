@@ -101,18 +101,25 @@ if st.session_state.get("inv_msg"):
 membros           = get_membros_household() or ["—"]
 produtos_fixos_df = get_config_investimentos(somente_ativos=True, tipo="fixo")
 produtos_todos_df = get_config_investimentos(somente_ativos=True)
-df_mensal_inv     = get_investimentos_mensal(ANO_APP)
-df_evo            = get_investimentos_evolucao()
+
+# ── Filtro por produto (Todos = carteira consolidada) ─────────────────────
+# pf=None -> tudo somado; pf='Manu 4k' -> só aquela apólice. Todas as métricas
+# e gráficos abaixo respeitam esse filtro.
+nomes_prod = produtos_todos_df["nome"].tolist() if not produtos_todos_df.empty else []
+prod_sel = st.selectbox("🔎 Ver", ["Todos os produtos"] + nomes_prod, key="inv_filtro_prod")
+pf = None if prod_sel == "Todos os produtos" else prod_sel
+
+df_evo            = get_investimentos_evolucao(pf)
 df_evo_prod       = get_investimentos_evolucao_produto()
 
-# Totais (todos os anos).
-total_aportado   = get_total_investido()      # saldo inicial + Σ aportes (= custo)
-total_rendimento = get_total_rendimento()
-total_dividendos = get_total_dividendos()
+# Totais (respeitam o filtro de produto pf).
+total_aportado   = get_total_investido(pf)    # saldo inicial + Σ aportes (= custo)
+total_rendimento = get_total_rendimento(pf)
+total_dividendos = get_total_dividendos(pf)
 patrimonio       = total_aportado + total_rendimento
-aportado_ano     = get_aportado_no_ano(ANO_APP)
+aportado_ano     = get_aportado_no_ano(ANO_APP, pf)
 perc_rend        = (total_rendimento / total_aportado * 100) if total_aportado > 0 else None
-saldo_inicial    = get_saldo_inicial_investimentos()
+saldo_inicial    = get_saldo_inicial_investimentos(pf)
 
 # mapa nome->id dos produtos (para serie / dividendos).
 prod_nome2id = {str(r["nome"]).lower(): int(r["id"])
@@ -132,16 +139,18 @@ c2.metric("📥 Total aportado", f"SGD {total_aportado:,.0f}",
           help="Quanto você já colocou (saldo inicial + todos os aportes). É o 'custo' da carteira.")
 c3.metric("📈 Rendimento total", f"SGD {total_rendimento:,.0f}",
           delta=(f"{perc_rend:.1f}% s/ aportado" if perc_rend is not None else None),
-          help="Valorização acumulada da carteira (ganho de mercado, fora dividendos).")
-c4.metric("💵 Dividendos recebidos", f"SGD {total_dividendos:,.0f}",
-          help="Renda de dividendos acumulada (todos os anos). Acompanhada aqui no módulo.")
+          help="Ganho acumulado = valor de mercado − aportado. Já inclui dividendos "
+               "reinvestidos e bônus, líquido de taxas.")
+c4.metric("💵 Dividendos gerados", f"SGD {total_dividendos:,.0f}",
+          help="Dividendos que os fundos distribuíram (reinvestidos — já estão DENTRO "
+               "do rendimento/patrimônio, não somam de novo). Informativo.")
 
 st.markdown("---")
 
 # ══════════════════════════════════════════════════════════════════════════
 # SECAO 1 — EVOLUCAO (graficos multi-ano)
 # ══════════════════════════════════════════════════════════════════════════
-st.subheader("📊 Evolução da carteira")
+st.subheader("📊 Evolução" + (f" — {pf}" if pf else " da carteira"))
 
 if df_evo.empty:
     st.info("Sem dados ainda — registre os aportes e os rendimentos para ver a evolução. 🚀")
@@ -167,10 +176,13 @@ else:
             st.caption("As duas linhas coincidem porque ainda não há rendimento lançado — "
                        "a área verde (ganho) aparece quando você informar os rendimentos abaixo.")
 
-    # ── Valor por produto (area empilhada) ────────────────────────────────
+    # ── Valor por produto (area empilhada) — só na visão consolidada ──────
     with col_g2:
         st.markdown("#### Valor por produto")
-        if not df_evo_prod.empty and df_evo_prod["valor"].abs().sum() > 0:
+        if pf is not None:
+            st.info(f"Mostrando **{pf}** isolado. Selecione **Todos os produtos** "
+                    "no topo para ver a divisão por produto.")
+        elif not df_evo_prod.empty and df_evo_prod["valor"].abs().sum() > 0:
             figv = px.area(df_evo_prod, x="periodo", y="valor", color="produto",
                            color_discrete_sequence=px.colors.qualitative.Set2)
             figv.update_traces(

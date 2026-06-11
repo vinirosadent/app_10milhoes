@@ -859,18 +859,20 @@ def get_investimentos_mensal(ano=2026, household_id=None):
           hh, ano])
 
 
-def get_total_investido(household_id=None):
+def get_total_investido(produto=None, household_id=None):
     """
-    Total guardado = saldo inicial + soma de TODOS os aportes (todos os anos).
-    Dividendos NAO entram: eles sairam da corretora para a conta corrente —
-    se forem reinvestidos, o usuario registra um aporte variavel e ai sim
-    voltam a contar.
+    Total aportado (custo) = saldo inicial + soma de TODOS os aportes (todos os anos).
+    Opcionalmente filtra por produto (item). Dividendos NAO entram aqui — eles ja
+    estao dentro do rendimento/valor (sao reinvestidos).
     """
     hh = _hh(household_id)
-    return float(query_df(
-        "SELECT COALESCE(SUM(valor),0) AS v FROM lancamentos "
-        "WHERE household_id=%s AND tipo_geral='Investimento'",
-        [hh])["v"].values[0])
+    sql = ("SELECT COALESCE(SUM(valor),0) AS v FROM lancamentos "
+           "WHERE household_id=%s AND tipo_geral='Investimento'")
+    params = [hh]
+    if produto:
+        sql += " AND item = %s"
+        params.append(produto)
+    return float(query_df(sql, params)["v"].values[0])
 
 
 def get_investido_por_produto(household_id=None):
@@ -886,13 +888,16 @@ def get_investido_por_produto(household_id=None):
         [hh])
 
 
-def get_saldo_inicial_investimentos(household_id=None):
-    """Soma dos registros de saldo inicial (0.0 se ainda nao registrado)."""
+def get_saldo_inicial_investimentos(produto=None, household_id=None):
+    """Soma dos registros de saldo inicial (0.0 se ainda nao registrado). Opcional: produto."""
     hh = _hh(household_id)
-    return float(query_df(
-        "SELECT COALESCE(SUM(valor),0) AS v FROM lancamentos "
-        "WHERE household_id=%s AND tipo_geral='Investimento' AND categoria=%s",
-        [hh, CAT_SALDO_INICIAL])["v"].values[0])
+    sql = ("SELECT COALESCE(SUM(valor),0) AS v FROM lancamentos "
+           "WHERE household_id=%s AND tipo_geral='Investimento' AND categoria=%s")
+    params = [hh, CAT_SALDO_INICIAL]
+    if produto:
+        sql += " AND item = %s"
+        params.append(produto)
+    return float(query_df(sql, params)["v"].values[0])
 
 
 def get_registros_investimentos(ano=2026, household_id=None):
@@ -930,29 +935,37 @@ def get_registros_investimentos(ano=2026, household_id=None):
 #   PATRIMONIO (valor mkt)   = Total aportado + Rendimento total
 #   Dividendos recebidos     = Σ dividendo                      (de `investimentos_serie`)
 
-def get_total_rendimento(household_id=None):
-    """Rendimento acumulado de todos os tempos (valorizacao +/- da carteira)."""
+def _sum_serie(coluna, hh, produto=None):
+    """Soma uma coluna da serie (rendimento/dividendo), opcional por produto."""
+    sql = (f"SELECT COALESCE(SUM(s.{coluna}),0) AS v FROM investimentos_serie s "
+           "JOIN config_investimentos c ON c.id = s.produto_id WHERE s.household_id=%s")
+    params = [hh]
+    if produto:
+        sql += " AND c.nome = %s"
+        params.append(produto)
+    return float(query_df(sql, params)["v"].values[0])
+
+
+def get_total_rendimento(produto=None, household_id=None):
+    """Rendimento acumulado (valorizacao +/-). Opcional: filtra por produto."""
+    return _sum_serie("rendimento", _hh(household_id), produto)
+
+
+def get_total_dividendos(produto=None, household_id=None):
+    """Total de dividendos gerados pelos fundos (reinvestidos — ja dentro do rendimento)."""
+    return _sum_serie("dividendo", _hh(household_id), produto)
+
+
+def get_aportado_no_ano(ano, produto=None, household_id=None):
+    """Aportes (fixo + variavel) feitos no ano — exclui saldo inicial. Opcional: produto."""
     hh = _hh(household_id)
-    return float(query_df(
-        "SELECT COALESCE(SUM(rendimento),0) AS v FROM investimentos_serie WHERE household_id=%s",
-        [hh])["v"].values[0])
-
-
-def get_total_dividendos(household_id=None):
-    """Total de dividendos recebidos (todos os anos)."""
-    hh = _hh(household_id)
-    return float(query_df(
-        "SELECT COALESCE(SUM(dividendo),0) AS v FROM investimentos_serie WHERE household_id=%s",
-        [hh])["v"].values[0])
-
-
-def get_aportado_no_ano(ano, household_id=None):
-    """Aportes (fixo + variavel) feitos no ano — exclui saldo inicial."""
-    hh = _hh(household_id)
-    return float(query_df(
-        "SELECT COALESCE(SUM(valor),0) AS v FROM lancamentos "
-        "WHERE household_id=%s AND tipo_geral='Investimento' AND ano=%s AND categoria IN (%s,%s)",
-        [hh, ano, CAT_APORTE_FIXO, CAT_APORTE_VAR])["v"].values[0])
+    sql = ("SELECT COALESCE(SUM(valor),0) AS v FROM lancamentos "
+           "WHERE household_id=%s AND tipo_geral='Investimento' AND ano=%s AND categoria IN (%s,%s)")
+    params = [hh, ano, CAT_APORTE_FIXO, CAT_APORTE_VAR]
+    if produto:
+        sql += " AND item = %s"
+        params.append(produto)
+    return float(query_df(sql, params)["v"].values[0])
 
 
 def _evolucao_frame(ap, sr, saldo_ini):
@@ -1001,23 +1014,32 @@ def _evolucao_frame(ap, sr, saldo_ini):
     return out[cols]
 
 
-def get_investimentos_evolucao(household_id=None):
+def get_investimentos_evolucao(produto=None, household_id=None):
     """
-    Serie mensal consolidada de TODOS os anos para os graficos de evolucao.
+    Serie mensal consolidada (ou de 1 produto) para os graficos de evolucao.
     Colunas: periodo, ano, nro_mes, aporte, rendimento, dividendo,
              aporte_acum, rendimento_acum, patrimonio, dividendo_acum.
     """
     hh = _hh(household_id)
-    ap = query_df(
-        "SELECT ano, nro_mes, SUM(valor) AS aporte FROM lancamentos "
-        "WHERE household_id=%s AND tipo_geral='Investimento' AND categoria IN (%s,%s) "
-        "GROUP BY ano, nro_mes",
-        [hh, CAT_APORTE_FIXO, CAT_APORTE_VAR])
-    sr = query_df(
-        "SELECT ano, nro_mes, SUM(rendimento) AS rendimento, SUM(dividendo) AS dividendo "
-        "FROM investimentos_serie WHERE household_id=%s GROUP BY ano, nro_mes",
-        [hh])
-    return _evolucao_frame(ap, sr, get_saldo_inicial_investimentos(hh))
+    ap_sql = ("SELECT ano, nro_mes, SUM(valor) AS aporte FROM lancamentos "
+              "WHERE household_id=%s AND tipo_geral='Investimento' AND categoria IN (%s,%s)")
+    ap_p = [hh, CAT_APORTE_FIXO, CAT_APORTE_VAR]
+    if produto:
+        ap_sql += " AND item = %s"
+        ap_p.append(produto)
+    ap_sql += " GROUP BY ano, nro_mes"
+    ap = query_df(ap_sql, ap_p)
+
+    sr_sql = ("SELECT s.ano, s.nro_mes, SUM(s.rendimento) AS rendimento, SUM(s.dividendo) AS dividendo "
+              "FROM investimentos_serie s JOIN config_investimentos c ON c.id = s.produto_id "
+              "WHERE s.household_id=%s")
+    sr_p = [hh]
+    if produto:
+        sr_sql += " AND c.nome = %s"
+        sr_p.append(produto)
+    sr_sql += " GROUP BY s.ano, s.nro_mes"
+    sr = query_df(sr_sql, sr_p)
+    return _evolucao_frame(ap, sr, get_saldo_inicial_investimentos(produto, hh))
 
 
 def get_investimentos_evolucao_produto(household_id=None):
