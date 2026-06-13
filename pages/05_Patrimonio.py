@@ -77,12 +77,24 @@ else:
     delta  = atual - float(serie["patrimonio"].iloc[-2]) if len(serie) >= 2 else None
     ultimo_label = f"{serie['mes'].iloc[-1]}/{int(serie['ano'].iloc[-1])}"
 
+    serie_ord = serie.sort_values("periodo").reset_index(drop=True)
+    val_col = "patrimonio"
+    patrimonio_atual = float(serie_ord[val_col].iloc[-1])
+    tem_12m = len(serie_ord) >= 13
+    if tem_12m:
+        base_12m = float(serie_ord[val_col].iloc[-13])
+        var_12m_abs = patrimonio_atual - base_12m
+        var_12m_pct = (var_12m_abs / base_12m * 100.0) if base_12m else 0.0
+        media_mensal = var_12m_abs / 12.0
+
     c1, c2, c3 = st.columns(3)
     c1.metric("💰 Patrimônio atual", f"SGD {atual:,.0f}",
               delta=(f"{delta:+,.0f} vs mês ant." if delta is not None else None),
               help=f"Último mês registrado: {ultimo_label}.")
-    c2.metric("📈 Desde o início", f"SGD {atual - inicio:,.0f}",
-              help="Variação total desde o primeiro mês registrado.")
+    if tem_12m:
+        c2.metric("Ultimos 12 meses", f"SGD {var_12m_abs:,.0f}", f"{var_12m_pct:+.1f}%")
+    else:
+        c2.metric("Ultimos 12 meses", "—")
     c3.metric("🗓️ Meses registrados", f"{len(serie)}")
 
     fig = go.Figure()
@@ -93,6 +105,25 @@ else:
         hovertemplate="%{x|%b/%Y}<br>Patrimônio: SGD %{y:,.0f}<extra></extra>"))
     fig.update_yaxes(tickprefix="SGD ")
     st.plotly_chart(fmt(fig), use_container_width=True)
+
+    if tem_12m and media_mensal != 0:
+        proj_12m = patrimonio_atual + var_12m_abs
+        proj_5anos = patrimonio_atual + media_mensal * 60
+        meta = 2_000_000
+        if patrimonio_atual >= meta:
+            tempo_meta = "meta ja atingida 🎉"
+        elif media_mensal > 0:
+            meses_meta = (meta - patrimonio_atual) / media_mensal
+            tempo_meta = f"~{int(meses_meta // 12)} anos e {int(round(meses_meta % 12))} meses"
+        else:
+            tempo_meta = "ritmo atual nao chega a meta"
+        st.markdown("#### 🔮 Projecao (ritmo dos ultimos 12 meses)")
+        st.caption(f"Media de SGD {media_mensal:,.0f}/mes nos ultimos 12 meses.")
+        pc = st.columns(3)
+        pc[0].metric("Em 12 meses", f"SGD {proj_12m:,.0f}")
+        pc[1].metric("Em 5 anos", f"SGD {proj_5anos:,.0f}")
+        pc[2].metric("Para SGD 2 mi", tempo_meta)
+        st.caption("Projecao linear (nao considera juros compostos nem mudanca no ritmo de aporte).")
 
 st.markdown("---")
 

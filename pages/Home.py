@@ -14,7 +14,7 @@ st.markdown("---")
 # False: se a Home rodar fora do fluxo normal, o card simplesmente nao aparece.
 tem_investimentos = st.session_state.get("investimentos_ativo", False)
 
-colunas = st.columns(4 if tem_investimentos else 3)
+colunas = st.columns(5 if tem_investimentos else 4)
 
 with colunas[0]:
     st.markdown("### 📝 Lancamentos")
@@ -34,6 +34,12 @@ if tem_investimentos:
         st.write("Aportes, dividendos e total guardado")
         if st.button("Acessar", key="btn_inv", use_container_width=True, type="primary"):
             st.switch_page("pages/04_Investimentos.py")
+
+with colunas[-2]:
+    st.markdown("### 📈 Patrimonio")
+    st.write("Evolucao do patrimonio total da casa")
+    if st.button("Acessar", key="btn_pat", use_container_width=True, type="primary"):
+        st.switch_page("pages/05_Patrimonio.py")
 
 with colunas[-1]:
     st.markdown("### 🔧 Configuracoes")
