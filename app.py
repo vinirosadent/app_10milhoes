@@ -40,6 +40,7 @@ with st.sidebar:
 home          = st.Page("pages/Home.py",             title="Home",          icon="🏠", default=True)
 lancamentos   = st.Page("pages/01_Lancamentos.py",   title="Lancamentos",   icon="📝")
 dashboard     = st.Page("pages/02_Dashboard.py",     title="Dashboard",     icon="📊")
+patrimonio    = st.Page("pages/05_Patrimonio.py",    title="Patrimônio",    icon="📈")
 configuracoes = st.Page("pages/03_Configuracoes.py", title="Configurações", icon="🔧")
 
 # ── Modulo de investimentos (por household) ───────────────────────────────
@@ -53,6 +54,7 @@ if "investimentos_ativo" not in st.session_state:
 paginas = [home, lancamentos, dashboard]
 if st.session_state["investimentos_ativo"]:
     paginas.append(st.Page("pages/04_Investimentos.py", title="Investimentos", icon="💎"))
+paginas.append(patrimonio)
 paginas.append(configuracoes)
 
 pg = st.navigation(paginas)
