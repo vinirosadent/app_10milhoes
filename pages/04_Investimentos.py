@@ -46,6 +46,8 @@ from core.database import (
     get_total_rendimento, get_total_dividendos, get_aportado_no_ano,
     get_investimentos_evolucao, get_investimentos_evolucao_produto,
     upsert_serie, get_serie_df,
+    # Entrada por Account Value (extrato): patrimonio anterior + aporte do mes:
+    get_patrimonio_produto_antes, get_aporte_produto_mes,
     CAT_APORTE_VAR, CAT_SALDO_INICIAL,
 )
 
@@ -142,8 +144,10 @@ c3.metric("📈 Rendimento total", f"SGD {total_rendimento:,.0f}",
           help="Ganho acumulado = valor de mercado − aportado. Já inclui dividendos "
                "reinvestidos e bônus, líquido de taxas.")
 c4.metric("💵 Dividendos gerados", f"SGD {total_dividendos:,.0f}",
-          help="Dividendos que os fundos distribuíram (reinvestidos — já estão DENTRO "
-               "do rendimento/patrimônio, não somam de novo). Informativo.")
+          help="Total que os fundos distribuíram. Reinvestidos já estão DENTRO do "
+               "patrimônio; pagos em caixa (não reinvestidos) são renda que saiu da "
+               "carteira pra você investir noutro lugar. Em ambos os casos é "
+               "informativo — não soma de novo ao patrimônio.")
 
 st.markdown("---")
 
@@ -300,7 +304,114 @@ st.caption("Rendimento = quanto o produto **ganhou/perdeu** no mês (pode ser ne
 if produtos_todos_df.empty:
     st.info("Cadastre um produto primeiro (em ⚙️ Meus produtos de investimento).")
 else:
-    tab_um, tab_lote = st.tabs(["Lançar um mês", "Importar em lote (colar)"])
+    tab_tav, tab_um, tab_lote = st.tabs([
+        "📄 Pelo Account Value (extrato)",
+        "✍️ Lançar rendimento direto",
+        "📋 Importar em lote (colar)",
+    ])
+
+    # ── Pelo Account Value do extrato (jeito mais facil) ──────────────────
+    # O usuario informa o Account Value do statement; o app registra o aporte
+    # fixo do mes (se ainda nao houver) e calcula o rendimento por diferenca:
+    #   rendimento = account_value - patrimonio_anterior - aporte
+    # de modo que o patrimonio reconstruido fique igual ao Account Value.
+    with tab_tav:
+        st.caption("Informe o **Account Value** do extrato Manulife. O app registra o "
+                   "aporte fixo do mês (se ainda não houver) e calcula sozinho o "
+                   "rendimento, deixando o patrimônio igual ao extrato. O **dividendo "
+                   "recebido em caixa** é opcional e entra como renda (não reinvestido).")
+
+        ct1, ct2, ct3 = st.columns(3)
+        with ct1:
+            prod_tav = st.selectbox("Apólice / produto",
+                                    produtos_todos_df["nome"].tolist(), key="inv_prod_tav")
+        with ct2:
+            ano_tav = st.number_input("Ano", min_value=2010, max_value=2100,
+                                      value=ANO_APP, step=1, key="inv_ano_tav")
+        with ct3:
+            mes_tav = st.selectbox("Mês", MESES_LISTA, index=mes_default, key="inv_mes_tav")
+
+        cv1, cv2 = st.columns(2)
+        with cv1:
+            tav_val = st.number_input("Account Value do extrato (SGD)", min_value=0.0,
+                                      value=None, step=100.0, format="%.2f",
+                                      placeholder="ex: 258536.92", key="inv_tav_val")
+        with cv2:
+            div_tav = st.number_input("Dividendo recebido no mês (SGD) — opcional",
+                                      min_value=0.0, value=None, step=10.0, format="%.2f",
+                                      placeholder="ex: 1337.57 (em caixa)", key="inv_div_tav")
+
+        quem_tav = st.selectbox(
+            "Quem (usado só se o aporte do mês ainda não estiver lançado)",
+            membros, index=quem_default, key="inv_quem_tav")
+
+        # valor_fixo do produto selecionado (0 se for produto variavel).
+        def _valor_fixo_de(nome):
+            if (not produtos_fixos_df.empty
+                    and nome in produtos_fixos_df["nome"].values):
+                return float(produtos_fixos_df
+                             .loc[produtos_fixos_df["nome"] == nome, "valor_fixo"].iloc[0])
+            return 0.0
+
+        # Previa: mostra a conta ANTES de salvar (transparencia).
+        if tav_val is not None and prod_tav:
+            _nro = MESES_LISTA.index(mes_tav) + 1
+            _patr_antes = get_patrimonio_produto_antes(prod_tav, int(ano_tav), _nro)
+            _ap_exist = get_aporte_produto_mes(prod_tav, int(ano_tav), _nro)
+            _aporte = _ap_exist if _ap_exist > 0 else _valor_fixo_de(prod_tav)
+            _rend = float(tav_val) - _patr_antes - _aporte
+            _origem_ap = (f"aporte já lançado SGD {_ap_exist:,.0f}" if _ap_exist > 0
+                          else f"vai lançar aporte fixo SGD {_aporte:,.0f}")
+            st.info(
+                f"**Prévia — {prod_tav} · {mes_tav}/{int(ano_tav)}**  \n"
+                f"Patrimônio anterior: SGD {_patr_antes:,.0f} · {_origem_ap} · "
+                f"**rendimento calculado: SGD {_rend:,.0f}**  \n"
+                f"→ patrimônio do produto fica **SGD {float(tav_val):,.0f}** (= extrato)."
+            )
+
+        if st.button("💾 Salvar pelo Account Value", type="primary",
+                     use_container_width=True, key="inv_btn_tav"):
+            if tav_val is None:
+                st.error("Informe o Account Value do extrato.")
+            else:
+                try:
+                    nro_tav = MESES_LISTA.index(mes_tav) + 1
+                    pid_tav = prod_nome2id[prod_tav.lower()]
+
+                    # 1) Aporte do mes: reaproveita se ja existe; senao lanca o fixo.
+                    ap_exist = get_aporte_produto_mes(prod_tav, int(ano_tav), nro_tav)
+                    if ap_exist > 0:
+                        aporte_use = ap_exist
+                    else:
+                        aporte_use = _valor_fixo_de(prod_tav)
+                        if aporte_use > 0:
+                            registrar_aportes_fixos(
+                                quem_tav, mes_tav, nro_tav, int(ano_tav),
+                                [{"nome": prod_tav, "valor_fixo": aporte_use}])
+
+                    # 2) Patrimonio anterior -> rendimento por diferenca.
+                    patr_antes = get_patrimonio_produto_antes(prod_tav, int(ano_tav), nro_tav)
+                    rend_calc = float(tav_val) - patr_antes - aporte_use
+
+                    # 3) Grava rendimento (e dividendo em caixa, se informado).
+                    upsert_serie(
+                        pid_tav, int(ano_tav), nro_tav,
+                        rendimento=rend_calc,
+                        dividendo=(float(div_tav) if div_tav else None),
+                        reinvestido=(False if div_tav else None),
+                    )
+
+                    extra = (f" Dividendo SGD {float(div_tav):,.2f} (caixa) registrado."
+                             if div_tav else "")
+                    st.session_state["inv_msg"] = (
+                        f"✅ {prod_tav} — {mes_tav}/{int(ano_tav)}: Account Value "
+                        f"SGD {float(tav_val):,.2f} salvo "
+                        f"(aporte SGD {aporte_use:,.0f} + rendimento SGD {rend_calc:,.0f}). "
+                        f"Patrimônio bate com o extrato.{extra}"
+                    )
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Erro ao salvar: {e}")
 
     # ── Lançar um único mês ───────────────────────────────────────────────
     with tab_um:

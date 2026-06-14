@@ -1089,21 +1089,72 @@ def get_investimentos_evolucao_produto(household_id=None):
     return pd.concat(blocos, ignore_index=True)
 
 
-def upsert_serie(produto_id, ano, nro_mes, rendimento=None, dividendo=None, household_id=None):
+def get_patrimonio_produto_antes(produto, ano, nro_mes, household_id=None):
+    """
+    Valor de mercado (patrimonio) do produto considerando tudo ESTRITAMENTE
+    ANTES do mes alvo (ano, nro_mes): saldo inicial + Σ aportes + Σ rendimentos
+    cujo (ano, nro_mes) seja anterior ao alvo.
+
+    Usado pela entrada por Account Value: inverte o valor do extrato em
+    rendimento do mes ->  rendimento[m] = account_value[m] - patrimonio_antes - aporte[m].
+    Assim o patrimonio reconstruido (Σaporte + Σrendimento) fica IGUAL ao Account
+    Value digitado. Mesma definicao de patrimonio de get_investimentos_evolucao,
+    so que cortada no mes anterior.
+    """
+    hh = _hh(household_id)
+    chave = ano * 100 + nro_mes
+    ap = query_df(
+        "SELECT COALESCE(SUM(valor),0) AS v FROM lancamentos "
+        "WHERE household_id=%s AND tipo_geral='Investimento' "
+        "AND categoria IN (%s,%s) AND item=%s AND (ano*100 + nro_mes) < %s",
+        [hh, CAT_APORTE_FIXO, CAT_APORTE_VAR, produto, chave])
+    sr = query_df(
+        "SELECT COALESCE(SUM(s.rendimento),0) AS v FROM investimentos_serie s "
+        "JOIN config_investimentos c ON c.id = s.produto_id "
+        "WHERE s.household_id=%s AND c.nome=%s AND (s.ano*100 + s.nro_mes) < %s",
+        [hh, produto, chave])
+    saldo_ini = get_saldo_inicial_investimentos(produto, hh)
+    return saldo_ini + float(ap["v"].values[0]) + float(sr["v"].values[0])
+
+
+def get_aporte_produto_mes(produto, ano, nro_mes, household_id=None):
+    """
+    Soma dos aportes (fixo + variavel) ja lancados para um produto num mes/ano.
+    Usado pela entrada por Account Value: se ja existe aporte do mes, reaproveita
+    o valor (NAO duplica); se for 0, a pagina lanca o aporte fixo do produto.
+    """
+    hh = _hh(household_id)
+    df = query_df(
+        "SELECT COALESCE(SUM(valor),0) AS v FROM lancamentos "
+        "WHERE household_id=%s AND tipo_geral='Investimento' "
+        "AND categoria IN (%s,%s) AND item=%s AND ano=%s AND nro_mes=%s",
+        [hh, CAT_APORTE_FIXO, CAT_APORTE_VAR, produto, ano, nro_mes])
+    return float(df["v"].values[0])
+
+
+def upsert_serie(produto_id, ano, nro_mes, rendimento=None, dividendo=None,
+                 reinvestido=None, household_id=None):
     """
     Insere/atualiza um ponto da serie (1 produto, 1 mes). Passe rendimento e/ou
     dividendo; o campo que vier None NAO sobrescreve o valor ja gravado
     (permite editar so o rendimento sem zerar o dividendo e vice-versa).
+
+    reinvestido: TRUE = dividendo reinvestido (ja dentro do rendimento/valor);
+    FALSE = dividendo pago em caixa (renda que saiu da carteira). None = nao mexe
+    (no insert assume TRUE, o default da tabela). So faz sentido informar junto
+    com um dividendo.
     """
     hh = _hh(household_id)
     execute(
         "INSERT INTO investimentos_serie "
-        "  (household_id, produto_id, ano, nro_mes, rendimento, dividendo) "
-        "VALUES (%s,%s,%s,%s, COALESCE(%s,0), COALESCE(%s,0)) "
+        "  (household_id, produto_id, ano, nro_mes, rendimento, dividendo, reinvestido) "
+        "VALUES (%s,%s,%s,%s, COALESCE(%s,0), COALESCE(%s,0), COALESCE(%s, TRUE)) "
         "ON CONFLICT (household_id, produto_id, ano, nro_mes) DO UPDATE SET "
-        "  rendimento = COALESCE(%s, investimentos_serie.rendimento), "
-        "  dividendo  = COALESCE(%s, investimentos_serie.dividendo)",
-        [hh, produto_id, ano, nro_mes, rendimento, dividendo, rendimento, dividendo],
+        "  rendimento  = COALESCE(%s, investimentos_serie.rendimento), "
+        "  dividendo   = COALESCE(%s, investimentos_serie.dividendo), "
+        "  reinvestido = COALESCE(%s, investimentos_serie.reinvestido)",
+        [hh, produto_id, ano, nro_mes, rendimento, dividendo, reinvestido,
+         rendimento, dividendo, reinvestido],
     )
 
 
