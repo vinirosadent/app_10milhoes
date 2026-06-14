@@ -103,7 +103,7 @@ else:
         mode="lines+markers", line=dict(color=C_TOTAL, width=2.5),
         fill="tozeroy", fillcolor=C_FILL,
         hovertemplate="%{x|%b/%Y}<br>Patrimônio: SGD %{y:,.0f}<extra></extra>"))
-    fig.update_yaxes(tickprefix="SGD ")
+    fig.update_yaxes(tickprefix="SGD ", tickformat=",.0f")
     st.plotly_chart(fmt(fig), use_container_width=True)
 
     if tem_12m and media_mensal != 0:
@@ -187,7 +187,7 @@ else:
         # (evita o number_input "grudar" no valor do mes anterior).
         val = col_v.number_input(
             c["nome"], min_value=0.0, value=default_val, step=100.0,
-            format="%.2f", key=f"pat_val_{cid}_{ano_sel}_{nro_mes_sel}",
+            format="%.0f", key=f"pat_val_{cid}_{ano_sel}_{nro_mes_sel}",
             label_visibility="collapsed")
 
         liquido = val * fator
