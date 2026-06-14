@@ -321,6 +321,10 @@ else:
                    "rendimento, deixando o patrimônio igual ao extrato. O **dividendo "
                    "recebido em caixa** é opcional e entra como renda (não reinvestido).")
 
+        # Confirmacao local: aparece AQUI na aba (nao so no topo da pagina).
+        if st.session_state.get("inv_tav_ok"):
+            st.success(st.session_state.pop("inv_tav_ok"))
+
         ct1, ct2, ct3 = st.columns(3)
         with ct1:
             prod_tav = st.selectbox("Apólice / produto",
@@ -403,12 +407,15 @@ else:
 
                     extra = (f" Dividendo SGD {float(div_tav):,.2f} (caixa) registrado."
                              if div_tav else "")
-                    st.session_state["inv_msg"] = (
+                    # Confirmacao na propria aba + limpa os campos de valor pro proximo mes.
+                    st.session_state["inv_tav_ok"] = (
                         f"✅ {prod_tav} — {mes_tav}/{int(ano_tav)}: Account Value "
                         f"SGD {float(tav_val):,.2f} salvo "
                         f"(aporte SGD {aporte_use:,.0f} + rendimento SGD {rend_calc:,.0f}). "
                         f"Patrimônio bate com o extrato.{extra}"
                     )
+                    for _k in ("inv_tav_val", "inv_div_tav"):
+                        st.session_state.pop(_k, None)
                     st.rerun()
                 except Exception as e:
                     st.error(f"Erro ao salvar: {e}")
