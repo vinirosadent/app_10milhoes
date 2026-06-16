@@ -108,7 +108,13 @@ else:
 
     if tem_12m and media_mensal != 0:
         proj_12m = patrimonio_atual + var_12m_abs
-        proj_5anos = patrimonio_atual + media_mensal * 60
+        # meses do ultimo mes da serie ate dez/2032
+        ultima_data = serie_ord["periodo"].iloc[-1]
+        meses_ate_2032 = (2032 - ultima_data.year) * 12 + (12 - ultima_data.month)
+        if meses_ate_2032 > 0:
+            proj_dez2032 = patrimonio_atual + media_mensal * meses_ate_2032
+        else:
+            proj_dez2032 = patrimonio_atual
         meta = 2_000_000
         if patrimonio_atual >= meta:
             tempo_meta = "meta ja atingida 🎉"
@@ -121,7 +127,7 @@ else:
         st.caption(f"Media de SGD {media_mensal:,.0f}/mes nos ultimos 12 meses.")
         pc = st.columns(3)
         pc[0].metric("Em 12 meses", f"SGD {proj_12m:,.0f}")
-        pc[1].metric("Em 5 anos", f"SGD {proj_5anos:,.0f}")
+        pc[1].metric("Em Dez/2032", f"SGD {proj_dez2032:,.0f}")
         pc[2].metric("Para SGD 2 mi", tempo_meta)
         st.caption("Projecao linear (nao considera juros compostos nem mudanca no ritmo de aporte).")
 
