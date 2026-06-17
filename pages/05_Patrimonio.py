@@ -87,7 +87,7 @@ else:
         var_12m_pct = (var_12m_abs / base_12m * 100.0) if base_12m else 0.0
         media_mensal = var_12m_abs / 12.0
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c_media, c3 = st.columns(4)
     c1.metric("💰 Patrimônio atual", f"SGD {atual:,.0f}",
               delta=(f"{delta:+,.0f} vs mês ant." if delta is not None else None),
               help=f"Último mês registrado: {ultimo_label}.")
@@ -95,6 +95,10 @@ else:
         c2.metric("Ultimos 12 meses", f"SGD {var_12m_abs:,.0f}", f"{var_12m_pct:+.1f}%")
     else:
         c2.metric("Ultimos 12 meses", "—")
+    if tem_12m:
+        c_media.metric("Média/mês", f"SGD {media_mensal:,.0f}")
+    else:
+        c_media.metric("Média/mês", "—")
     c3.metric("🗓️ Meses registrados", f"{len(serie)}")
 
     fig = go.Figure()
