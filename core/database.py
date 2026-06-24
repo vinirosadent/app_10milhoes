@@ -20,55 +20,12 @@ Convencoes:
 Conexao via SESSION POOLER + sslmode=require (decisao fixa do projeto — Direct
 Connection falha por IPv6 no host onde o Streamlit Cloud roda).
 """
-import os
-import psycopg2
-import psycopg2.extras
 import pandas as pd
-from dotenv import load_dotenv
-from pathlib import Path
 
-from core.auth import get_current_household_id
-
-load_dotenv(Path(__file__).parent.parent / ".env")
-
-DB_CONFIG = {
-    "host":     os.getenv("DB_HOST", "localhost"),
-    "port":     int(os.getenv("DB_PORT", 5432)),
-    "dbname":   os.getenv("DB_NAME", "app10milhoes"),
-    "user":     os.getenv("DB_USER", "postgres"),
-    "password": os.getenv("DB_PASSWORD", ""),
-    "sslmode":  "require",
-}
-
-
-def get_conn():
-    return psycopg2.connect(**DB_CONFIG)
-
-
-def query_df(sql, params=None):
-    conn = get_conn()
-    df = pd.read_sql_query(sql, conn, params=params)
-    conn.close()
-    return df
-
-
-def execute(sql, params=None):
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute(sql, params)
-    conn.commit()
-    cur.close()
-    conn.close()
-
-
-def _hh(household_id=None) -> int:
-    """
-    Resolve household_id: usa o explicito se passado, senao puxa do session_state.
-    Levanta RuntimeError se nao houver usuario logado (vide core/auth.py).
-    """
-    if household_id is not None:
-        return int(household_id)
-    return get_current_household_id()
+# Conexao e primitivas (get_conn/query_df/execute/_hh) agora moram em core/db.py.
+# Importamos query_df, execute e _hh de la e os reexportamos: quem ja faz
+# "from core.database import query_df/execute" continua funcionando sem mudanca.
+from core.db import query_df, execute, _hh
 
 
 # ── MESES (global) ────────────────────────────────────────────────────────

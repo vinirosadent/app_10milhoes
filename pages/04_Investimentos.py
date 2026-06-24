@@ -79,19 +79,27 @@ MESES_LISTA = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
                "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
 
 
-def fmt(fig, height=340, legend_side=False):
+def fmt(fig, height=360, legend_side=False):
     """Formatacao padrao dos graficos — mesma identidade visual do Dashboard."""
+    # Legenda embaixo para nao colidir com a barra do Plotly no canto superior
+    # direito; assim todos os itens ficam clicaveis no mobile.
     leg = dict(orientation="v", x=1.02, y=0.5, xanchor="left") if legend_side \
-        else dict(orientation="h", y=1.12)
+        else dict(orientation="h", yanchor="top", y=-0.18, x=0, xanchor="left")
     fig.update_layout(
-        height=height, margin=dict(l=0, r=0, t=36, b=0),
+        height=height, margin=dict(l=0, r=0, t=12, b=8),
         plot_bgcolor="white", paper_bgcolor="white",
         legend=leg, font=dict(family="Segoe UI", size=12),
         hoverlabel=dict(bgcolor="white", font_size=13),
+        hovermode="x unified",
     )
     fig.update_yaxes(gridcolor="#E0E7EF", zeroline=False)
     fig.update_xaxes(gridcolor="rgba(0,0,0,0)")
     return fig
+
+
+# Config padrao do Plotly: sem barra de ferramentas flutuante (no mobile ela
+# tapava a legenda e dava pan/zoom sem querer) e sem logo Plotly.
+PLOTLY_CFG = {"displayModeBar": False, "displaylogo": False}
 
 
 # Feedback persistente entre reruns.
@@ -104,12 +112,10 @@ membros           = get_membros_household() or ["—"]
 produtos_fixos_df = get_config_investimentos(somente_ativos=True, tipo="fixo")
 produtos_todos_df = get_config_investimentos(somente_ativos=True)
 
-# ── Filtro por produto (Todos = carteira consolidada) ─────────────────────
-# pf=None -> tudo somado; pf='Manu 4k' -> só aquela apólice. Todas as métricas
-# e gráficos abaixo respeitam esse filtro.
+# ── Filtro por produto (le session_state para queries usarem valor correto) ─
 nomes_prod = produtos_todos_df["nome"].tolist() if not produtos_todos_df.empty else []
-prod_sel = st.selectbox("🔎 Ver", ["Todos os produtos"] + nomes_prod, key="inv_filtro_prod")
-pf = None if prod_sel == "Todos os produtos" else prod_sel
+_sel = st.session_state.get("inv_filtro_prod", "Todos os produtos")
+pf = None if _sel == "Todos os produtos" else _sel
 
 df_evo            = get_investimentos_evolucao(pf)
 df_evo_prod       = get_investimentos_evolucao_produto()
@@ -174,8 +180,8 @@ else:
             mode="lines", line=dict(color=C_TOTAL, width=2.5),
             fill="tonexty", fillcolor=C_REND_FILL,
             hovertemplate="%{x|%b/%Y}<br>Patrimônio: SGD %{y:,.0f}<extra></extra>"))
-        figp.update_yaxes(tickprefix="SGD ")
-        st.plotly_chart(fmt(figp), use_container_width=True)
+        figp.update_yaxes(tickprefix="")
+        st.plotly_chart(fmt(figp), use_container_width=True, config=PLOTLY_CFG)
         if total_rendimento == 0:
             st.caption("As duas linhas coincidem porque ainda não há rendimento lançado — "
                        "a área verde (ganho) aparece quando você informar os rendimentos abaixo.")
@@ -191,9 +197,9 @@ else:
                            color_discrete_sequence=px.colors.qualitative.Set2)
             figv.update_traces(
                 hovertemplate="%{x|%b/%Y}<br>%{fullData.name}: SGD %{y:,.0f}<extra></extra>")
-            figv.update_yaxes(tickprefix="SGD ")
+            figv.update_yaxes(tickprefix="")
             figv.update_layout(legend_title_text="")
-            st.plotly_chart(fmt(figv), use_container_width=True)
+            st.plotly_chart(fmt(figv), use_container_width=True, config=PLOTLY_CFG)
         else:
             st.info("Registre aportes/rendimentos por produto para ver esta área.")
 
@@ -212,24 +218,26 @@ else:
         hovertemplate="%{x|%b/%Y}<br>Acumulado: SGD %{y:,.0f}<extra></extra>"),
         secondary_y=True)
     figr = fmt(figr, height=300)
-    figr.update_yaxes(title_text="Mês", tickprefix="SGD ", secondary_y=False)
-    figr.update_yaxes(title_text="Acum.", tickprefix="SGD ", secondary_y=True,
+    figr.update_yaxes(title_text="Mês", tickprefix="", secondary_y=False)
+    figr.update_yaxes(title_text="Acum.", tickprefix="", secondary_y=True,
                       gridcolor="rgba(0,0,0,0)")
-    st.plotly_chart(figr, use_container_width=True)
+    st.plotly_chart(figr, use_container_width=True, config=PLOTLY_CFG)
     if total_rendimento == 0:
         st.caption("Sem rendimentos lançados ainda. Use **📈 Rendimentos e dividendos** abaixo.")
 
     # ── Dividendos por ano (barras) + acumulado ───────────────────────────
     df_div_ano = (df_evo.groupby("ano", as_index=False)
                         .agg(dividendo=("dividendo", "sum")))
+    df_div_ano = df_div_ano[df_div_ano["dividendo"] > 0].reset_index(drop=True)
     if df_div_ano["dividendo"].sum() > 0:
         st.markdown("#### Dividendos por ano")
         df_div_ano["acum"] = df_div_ano["dividendo"].cumsum()
         figd = make_subplots(specs=[[{"secondary_y": True}]])
-        figd.add_trace(go.Bar(
+        figd.add_trace(go.Scatter(
             x=df_div_ano["ano"].astype(str), y=df_div_ano["dividendo"],
-            name="Dividendos no ano", marker_color=C_DIV,
-            hovertemplate="<b>%{x}</b><br>Dividendos: SGD %{y:,.0f}<extra></extra>"),
+            name="Dividendos no ano", mode="lines+markers",
+            line=dict(color=C_DIV, width=2),
+            hovertemplate="<b>%{x}</b><br>Dividendos: %{y:,.0f}<extra></extra>"),
             secondary_y=False)
         figd.add_trace(go.Scatter(
             x=df_div_ano["ano"].astype(str), y=df_div_ano["acum"],
@@ -237,9 +245,39 @@ else:
             hovertemplate="<b>%{x}</b><br>Acumulado: SGD %{y:,.0f}<extra></extra>"),
             secondary_y=True)
         figd = fmt(figd, height=300)
-        figd.update_yaxes(tickprefix="SGD ", secondary_y=False)
-        figd.update_yaxes(tickprefix="SGD ", secondary_y=True, gridcolor="rgba(0,0,0,0)")
-        st.plotly_chart(figd, use_container_width=True)
+        figd.update_yaxes(tickprefix="", secondary_y=False)
+        figd.update_yaxes(tickprefix="", secondary_y=True, gridcolor="rgba(0,0,0,0)")
+        st.plotly_chart(figd, use_container_width=True, config=PLOTLY_CFG)
+
+    # ── Aportes por ano (comparador anual) ────────────────────────────────
+    st.markdown("#### Aportes por ano")
+    _sav = df_evo.sort_values("periodo").copy()
+    _dav = _sav["aporte_acum"].diff()
+    _dav.iloc[0] = _sav["aporte_acum"].iloc[0]
+    _sav["_ap_mes"] = _dav.values
+    df_ap_ano = _sav.groupby("ano", as_index=False).agg(aporte=("_ap_mes", "sum"))
+    df_ap_ano["acum"] = df_ap_ano["aporte"].cumsum()
+    if df_ap_ano["aporte"].sum() > 0:
+        fig_ap = make_subplots(specs=[[{"secondary_y": True}]])
+        fig_ap.add_trace(go.Bar(
+            x=df_ap_ano["ano"].astype(str), y=df_ap_ano["aporte"],
+            name="Aportado no ano", marker_color=C_FIXO,
+            hovertemplate="<b>%{x}</b><br>Aportado: %{y:,.0f}<extra></extra>"),
+            secondary_y=False)
+        fig_ap.add_trace(go.Scatter(
+            x=df_ap_ano["ano"].astype(str), y=df_ap_ano["acum"],
+            name="Acumulado", mode="lines+markers",
+            line=dict(color=C_TOTAL, width=2),
+            hovertemplate="<b>%{x}</b><br>Acumulado: %{y:,.0f}<extra></extra>"),
+            secondary_y=True)
+        fig_ap = fmt(fig_ap, height=300)
+        fig_ap.update_yaxes(tickprefix="", secondary_y=False)
+        fig_ap.update_yaxes(tickprefix="", secondary_y=True, gridcolor="rgba(0,0,0,0)")
+        st.plotly_chart(fig_ap, use_container_width=True, config=PLOTLY_CFG)
+
+# ── Filtro por produto (abaixo dos graficos) ─────────────────────────────
+st.selectbox("🔎 Filtrar produto", ["Todos os produtos"] + nomes_prod,
+             key="inv_filtro_prod")
 
 st.markdown("---")
 

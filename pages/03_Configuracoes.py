@@ -101,7 +101,7 @@ with st.expander("💰 Orçamento", expanded=True):
                         f"</div>",
                         unsafe_allow_html=True
                     )
-                st.divider()
+                st.markdown('<hr style="margin:4px 0;border:none;border-top:1px solid #E0E7EF">', unsafe_allow_html=True)
 
     # ── TAB 2: Editar ─────────────────────────────────────────────────────
     with tab_editar:

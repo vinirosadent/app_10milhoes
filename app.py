@@ -14,6 +14,7 @@ sys.path.append(str(Path(__file__).parent))
 from login import login_page
 from core.auth import logout
 from core.database import get_investimentos_ativo
+from core.styles import aplicar_estilos
 
 st.set_page_config(
     page_title="App dos Milhões",
@@ -21,6 +22,9 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# Identidade visual (CSS global) — aplicada cedo, antes do login.
+aplicar_estilos()
 
 if not st.session_state.get("autenticado"):
     login_page()
