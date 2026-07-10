@@ -1,9 +1,15 @@
-streamlit
-psycopg2-binary
-pandas
-numpy
-plotly
-openpyxl
-python-dotenv
-sqlalchemy
-bcrypt
+# Dependencias do App 10M — com TETO DE MAJOR para proteger a producao de
+# breaking changes num redeploy (o Streamlit Cloud reconstroi o ambiente a cada
+# push). Nao fixamos nas versoes mais novas de proposito: pandas 3 / numpy 2
+# tem mudancas incompativeis. Para travar EXATAMENTE nas versoes que rodam hoje,
+# rode `pip freeze` no ambiente do Streamlit Cloud e troque cada linha por
+# ==<versao>.
+streamlit>=1.30,<2
+psycopg2-binary>=2.9,<3
+pandas>=2.0,<3
+numpy>=1.24,<3
+plotly>=5.0,<7
+openpyxl>=3.0,<4
+python-dotenv>=1.0,<2
+sqlalchemy>=2.0,<3
+bcrypt>=4.0,<6

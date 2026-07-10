@@ -17,8 +17,8 @@ Convencoes:
   - UPDATEs e DELETEs sempre incluem AND household_id = ? no WHERE, para impedir
     que um bug de codigo permita afetar dados de outro household.
 
-Conexao via SESSION POOLER + sslmode=require (decisao fixa do projeto — Direct
-Connection falha por IPv6 no host onde o Streamlit Cloud roda).
+Conexao via TRANSACTION POOLER (porta 6543) + sslmode=require (detalhes em
+core/db.py). Direct Connection nao e usada (falha por IPv6 no Streamlit Cloud).
 """
 import pandas as pd
 
@@ -307,26 +307,22 @@ def get_orcamento_matrix(ano=2026, household_id=None):
 
 def set_orcamento_mes(natureza, tipo, nro_mes, ano, valor, household_id=None):
     """
-    UPDATE-then-INSERT atomico em escopo de household. A race condition descrita
-    em [[project-indice-orcamento-divergencia]] continua existindo mas e ainda
-    mais improvavel agora (so colide se 2 usuarios DO MESMO household editarem
-    a mesma celula simultaneamente).
+    Upsert ATOMICO do valor de uma celula de orcamento (1 household, 1 categoria,
+    1 mes) via INSERT ... ON CONFLICT DO UPDATE.
+
+    Antes eram DUAS transacoes (UPDATE-then-INSERT), com uma janela de corrida que
+    podia gerar duplicata. Agora e uma so, apoiada na constraint `orcamento_uniq`
+    (UNIQUE NULLS NOT DISTINCT). Como `item` e sempre NULL no orcamento, o
+    NULLS NOT DISTINCT faz a unicidade valer sobre
+    (household_id, natureza, tipo, nro_mes, ano) — o banco garante 1 linha por
+    celula. Resolve a divergencia de [[project-indice-orcamento-divergencia]].
     """
     hh = _hh(household_id)
     execute(
-        "UPDATE orcamento SET valor=%s "
-        "WHERE household_id=%s AND natureza=%s AND tipo=%s AND nro_mes=%s AND ano=%s AND item IS NULL",
-        [valor, hh, natureza, tipo, nro_mes, ano],
-    )
-    execute(
         "INSERT INTO orcamento (natureza, tipo, item, nro_mes, ano, valor, household_id) "
-        "SELECT %s,%s,NULL,%s,%s,%s,%s "
-        "WHERE NOT EXISTS ("
-        "  SELECT 1 FROM orcamento "
-        "  WHERE household_id=%s AND natureza=%s AND tipo=%s AND nro_mes=%s AND ano=%s AND item IS NULL"
-        ")",
-        [natureza, tipo, nro_mes, ano, valor, hh,
-         hh, natureza, tipo, nro_mes, ano],
+        "VALUES (%s,%s,NULL,%s,%s,%s,%s) "
+        "ON CONFLICT ON CONSTRAINT orcamento_uniq DO UPDATE SET valor = EXCLUDED.valor",
+        [natureza, tipo, nro_mes, ano, valor, hh],
     )
 
 

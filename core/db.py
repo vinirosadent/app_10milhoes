@@ -7,8 +7,11 @@ funcoes query_df / execute e o helper _hh — em vez de cada um abrir conexao
 por conta propria. Centralizar aqui deixa o resto do codigo focado em "qual
 query", nao em "como conectar".
 
-Conexao via SESSION POOLER + sslmode=require (decisao fixa do projeto — Direct
-Connection falha por IPv6 no host onde o Streamlit Cloud roda). As credenciais
+Conexao via TRANSACTION POOLER (porta 6543) + sslmode=require. A 5432 (Session
+Pooler) era bloqueada por firewall apos conexoes em rajada; Transaction mode e o
+recomendado pela Supabase para conexoes curtas (Streamlit Cloud) e funciona com o
+padrao abre-conexao -> 1 query -> fecha deste app. Direct Connection nao e usada
+(falha por IPv6 no host do Streamlit Cloud). As credenciais
 vem do arquivo .env na raiz do projeto (local) / dos secrets (Streamlit Cloud).
 """
 import os

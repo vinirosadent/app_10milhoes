@@ -41,7 +41,7 @@ from core.database import (
     # Modulo de investimentos:
     get_investimentos_ativo, get_config_investimentos, add_config_investimento,
     update_config_investimento, get_aportes_fixos_registrados_no_mes,
-    registrar_aportes_fixos, get_investimentos_mensal, get_total_investido,
+    registrar_aportes_fixos, get_total_investido,
     get_saldo_inicial_investimentos, get_registros_investimentos,
     # Novos: serie (rendimento/dividendo), totais e evolucao multi-ano:
     get_total_rendimento, get_total_dividendos, get_aportado_no_ano,

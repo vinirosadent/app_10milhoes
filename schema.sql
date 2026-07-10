@@ -118,7 +118,11 @@ CREATE TABLE IF NOT EXISTS orcamento (
     household_id  INTEGER       REFERENCES households(id),
     -- UNIQUE estendido com household_id — sem isso, Admin e Ladroes nao podem
     -- ter o mesmo (natureza, tipo, item, mes) cadastrado em paralelo.
-    UNIQUE (household_id, natureza, tipo, item, nro_mes, ano)
+    -- NULLS NOT DISTINCT: `item` e sempre NULL no orcamento; sem isso a constraint
+    -- ficaria inerte (NULL != NULL) e nao barraria duplicata. Nome no banco:
+    -- orcamento_uniq (migration orcamento_unique_nulls_not_distinct, 2026-07-10),
+    -- usado pelo ON CONFLICT de set_orcamento_mes. Requer Postgres 15+.
+    CONSTRAINT orcamento_uniq UNIQUE NULLS NOT DISTINCT (household_id, natureza, tipo, item, nro_mes, ano)
 );
 
 CREATE INDEX IF NOT EXISTS idx_orc_household_ano ON orcamento(household_id, ano);
