@@ -542,6 +542,11 @@ with st.expander("📋 Gerenciar Lançamentos", expanded=False):
                     novo_item = None
 
             with c2:
+                # Mes do lancamento — era ignorado no form de edicao.
+                mes_atual = _safe(row["mes"])
+                mes_idx   = MESES.index(mes_atual) if mes_atual in MESES else 0
+                novo_mes     = st.selectbox("Mês", MESES, index=mes_idx, key=k("mes"))
+                novo_nro_mes = MESES.index(novo_mes) + 1
                 novo_val = st.number_input(
                     "Valor", value=float(row["valor"]),
                     min_value=0.0, format="%.0f", key=k("val")
@@ -569,6 +574,8 @@ with st.expander("📋 Gerenciar Lançamentos", expanded=False):
                     # ficaria divergente da categoria escolhida.
                     valor_real = novo_val if tipo_geral_row == "Entrada" else -novo_val
                     update_lancamento(eid, {
+                        "mes":        novo_mes,
+                        "nro_mes":    novo_nro_mes,
                         "natureza":   nova_nat,
                         "categoria":  nova_cat,
                         "item":       novo_item,

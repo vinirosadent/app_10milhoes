@@ -28,6 +28,7 @@ import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import numpy as np
 import pandas as pd
 import re
 import sys
@@ -249,6 +250,70 @@ else:
         figd.update_yaxes(tickprefix="", secondary_y=True, gridcolor="rgba(0,0,0,0)")
         st.plotly_chart(figd, use_container_width=True, config=PLOTLY_CFG)
 
+    # ── Card: dividendos — media, crescimento historico e projecao ────────
+    # Consolidado = soma do dividendo de TODOS os produtos por mes (sem groupby
+    # por produto, sem filtro pf). O crescimento historico tinha 2 motores:
+    # (a) aportes mensais regulares e (b) reinvestimento do proprio dividendo.
+    # Desde jun/2026 o motor (b) foi desligado (dividendo virou caixa) mas o (a)
+    # continua — por isso a projecao usa uma inclinacao MENOR que a historica.
+    df_div_serie = get_serie_df()
+    if not df_div_serie.empty:
+        df_div_mes = (df_div_serie.groupby(["ano", "nro_mes"], as_index=False)
+                                  .agg(dividendo=("dividendo", "sum")))
+        df_div_mes = df_div_mes[df_div_mes["dividendo"] > 0].sort_values(["ano", "nro_mes"])
+        valores_12m = df_div_mes["dividendo"].astype(float).tolist()[-12:]
+        n_meses = len(valores_12m)
+
+        if n_meses >= 3:
+            media_12m = sum(valores_12m) / n_meses
+
+            # Crescimento historico via regressao LINEAR simples (SGD/mes) — o
+            # padrao nos dados e incremento fixo, nao crescimento composto.
+            valores = np.array(valores_12m, dtype=float)
+            xs = np.arange(len(valores))
+            slope_historico, intercept = np.polyfit(xs, valores, 1)  # com reinvestimento
+
+            # Inclinacao futura = historica menos a fatia que vinha so do
+            # reinvestimento (ajustavel conforme dados reais).
+            REDUCAO_SEM_REINVESTIMENTO = 3.5  # SGD/mes
+            slope_futuro = max(slope_historico - REDUCAO_SEM_REINVESTIMENTO, 0.0)
+
+            ano_atual = date.today().year
+            projecao_5anos = [
+                {"ano": ano_atual + a,
+                 "media_mensal": media_12m + slope_futuro * (a * 12),
+                 "total_anual": (media_12m + slope_futuro * (a * 12)) * 12}
+                for a in range(1, 6)
+            ]
+
+            st.markdown("#### Dividendos — média, crescimento histórico e projeção")
+            col_dm1, col_dm2 = st.columns(2)
+            with col_dm1:
+                st.metric(f"Média mensal (últimos {n_meses}m)", f"{media_12m:,.0f}")
+            with col_dm2:
+                st.metric("Crescimento (SGD/mês)", f"{slope_historico:+,.1f}")
+
+            st.caption(
+                "⚠️ A partir de jun/2026 os dividendos deixaram de ser reinvestidos "
+                "automaticamente (viram caixa), mas os aportes mensais nos fundos "
+                "continuam normalmente. A projeção abaixo usa uma inclinação menor que "
+                "a histórica, descontando a fatia de crescimento que vinha só do "
+                "reinvestimento do dividendo — não do aporte regular."
+            )
+
+            with st.expander("Projeção para os próximos 5 anos"):
+                st.caption(
+                    "Projeção linear: soma o crescimento mensal esperado (aportes "
+                    "regulares, sem o reinvestimento do dividendo) sobre a média "
+                    "atual. Não considera mudança no valor dos aportes nem no yield "
+                    "dos fundos."
+                )
+                for p in projecao_5anos:
+                    st.write(
+                        f"**{p['ano']}**: média mensal ≈ {p['media_mensal']:,.0f}  "
+                        f"·  total no ano ≈ {p['total_anual']:,.0f}"
+                    )
+
     # ── Aportes por ano (comparador anual) ────────────────────────────────
     st.markdown("#### Aportes por ano")
     _sav = df_evo.sort_values("periodo").copy()
@@ -356,8 +421,7 @@ else:
     with tab_tav:
         st.caption("Informe o **Account Value** do extrato Manulife. O app registra o "
                    "aporte fixo do mês (se ainda não houver) e calcula sozinho o "
-                   "rendimento, deixando o patrimônio igual ao extrato. O **dividendo "
-                   "recebido em caixa** é opcional e entra como renda (não reinvestido).")
+                   "rendimento, deixando o patrimônio igual ao extrato.")
 
         # Confirmacao local: aparece AQUI na aba (nao so no topo da pagina).
         if st.session_state.get("inv_tav_ok"):
@@ -373,15 +437,9 @@ else:
         with ct3:
             mes_tav = st.selectbox("Mês", MESES_LISTA, index=mes_default, key="inv_mes_tav")
 
-        cv1, cv2 = st.columns(2)
-        with cv1:
-            tav_val = st.number_input("Account Value do extrato (SGD)", min_value=0.0,
-                                      value=None, step=100.0, format="%.2f",
-                                      placeholder="ex: 258536.92", key="inv_tav_val")
-        with cv2:
-            div_tav = st.number_input("Dividendo recebido no mês (SGD) — opcional",
-                                      min_value=0.0, value=None, step=10.0, format="%.2f",
-                                      placeholder="ex: 1337.57 (em caixa)", key="inv_div_tav")
+        tav_val = st.number_input("Account Value do extrato (SGD)", min_value=0.0,
+                                  value=None, step=100.0, format="%.2f",
+                                  placeholder="ex: 258536.92", key="inv_tav_val")
 
         quem_tav = st.selectbox(
             "Quem (usado só se o aporte do mês ainda não estiver lançado)",
@@ -439,21 +497,16 @@ else:
                     upsert_serie(
                         pid_tav, int(ano_tav), nro_tav,
                         rendimento=rend_calc,
-                        dividendo=(float(div_tav) if div_tav else None),
-                        reinvestido=(False if div_tav else None),
                     )
 
-                    extra = (f" Dividendo SGD {float(div_tav):,.2f} (caixa) registrado."
-                             if div_tav else "")
-                    # Confirmacao na propria aba + limpa os campos de valor pro proximo mes.
+                    # Confirmacao na propria aba + limpa o campo de valor pro proximo mes.
                     st.session_state["inv_tav_ok"] = (
                         f"✅ {prod_tav} — {mes_tav}/{int(ano_tav)}: Account Value "
                         f"SGD {float(tav_val):,.2f} salvo "
                         f"(aporte SGD {aporte_use:,.0f} + rendimento SGD {rend_calc:,.0f}). "
-                        f"Patrimônio bate com o extrato.{extra}"
+                        f"Patrimônio bate com o extrato."
                     )
-                    for _k in ("inv_tav_val", "inv_div_tav"):
-                        st.session_state.pop(_k, None)
+                    st.session_state.pop("inv_tav_val", None)
                     st.rerun()
                 except Exception as e:
                     st.error(f"Erro ao salvar: {e}")

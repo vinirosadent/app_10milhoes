@@ -60,8 +60,10 @@ pagamentos_df = get_formas_pagamento()
 meses_lista = meses_df["nome"].tolist()
 pagamentos  = pagamentos_df["nome"].tolist()
 
-ultimo_mes = get_ultimo_mes()
-mes_index  = meses_lista.index(ultimo_mes) if ultimo_mes in meses_lista else 0
+# Usa o mes salvo na sessao como padrao (ultimo lancamento feito nesta sessao).
+# Se ainda nao houver, cai no ultimo mes do banco via get_ultimo_mes().
+_ult = st.session_state.get("ultimo_mes_lancado") or get_ultimo_mes()
+mes_index = meses_lista.index(_ult) if _ult in meses_lista else 0
 
 col1, col2 = st.columns(2)
 with col1:
@@ -203,6 +205,8 @@ if registrar:
         }
         try:
             inserir_lancamento(dados)
+            # Persiste o mes escolhido para pre-selecionar no proximo lancamento.
+            st.session_state["ultimo_mes_lancado"] = mes_nome
 
             # Se o usuario marcou "este pagamento quita a categoria", aplica
             # o UPDATE em config_saidas.quitado_ano agora — depois do INSERT
