@@ -215,6 +215,44 @@ with aba_renda:
             "(média recorrente)."
         )
 
+        # ── Calculadora: quantos meses ate uma renda passiva alvo ─────────────
+        st.markdown("#### Quanto tempo até uma renda passiva alvo?")
+        meta_rp = st.number_input(
+            "Renda passiva mensal alvo (R$)", min_value=0.0, value=2000.0,
+            step=100.0, format="%.2f", key="rp_meta_total")
+
+        def _total_proj(t):
+            return f_ac(t) + f_fi(t) + f_rf(t)
+
+        rp_hoje = _total_proj(base_t)
+        if meta_rp <= rp_hoje:
+            st.success(
+                f"Meta já atingida — a renda passiva projetada hoje é "
+                f"R$ {rp_hoje:,.0f}/mês.")
+        else:
+            achou = None
+            for k in range(1, 601):  # ate 50 anos
+                if _total_proj(base_t + k) >= meta_rp:
+                    achou = k
+                    break
+            if achou is None:
+                st.warning(
+                    "No ritmo atual, a projeção não alcança essa meta num "
+                    "horizonte razoável — as fontes tendem a estabilizar. "
+                    "Aumentar aportes (FIIs/Renda Fixa) encurtaria o prazo.")
+            else:
+                anos = achou / 12
+                val = _total_proj(base_t + achou)
+                st.write(
+                    f"No ritmo atual, a renda passiva chega a "
+                    f"**R$ {meta_rp:,.0f}/mês** em **~{achou} meses** "
+                    f"(~{anos:.1f} anos), atingindo R$ {val:,.0f}.")
+                st.caption(
+                    "Projeção linear por fonte (FIIs estável, Ações média "
+                    "recorrente, Renda Fixa reconstruindo pós-Master). Novos "
+                    "aportes ou mudança de yield alteram o prazo."
+                )
+
 # ══════════════════════════════════════════════════════════════════════════
 # ABA 2 — PATRIMONIO
 # ══════════════════════════════════════════════════════════════════════════
