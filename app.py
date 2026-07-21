@@ -45,6 +45,7 @@ home          = st.Page("pages/Home.py",             title="Home",          icon
 lancamentos   = st.Page("pages/01_Lancamentos.py",   title="Lancamentos",   icon="📝")
 dashboard     = st.Page("pages/02_Dashboard.py",     title="Dashboard",     icon="📊")
 patrimonio    = st.Page("pages/05_Patrimonio.py",    title="Patrimônio",    icon="📈")
+ricardo       = st.Page("pages/06_Ricardo.py",       title="Ricardo",       icon="👤")
 configuracoes = st.Page("pages/03_Configuracoes.py", title="Configurações", icon="🔧")
 
 # ── Modulo de investimentos (por household) ───────────────────────────────
@@ -59,6 +60,7 @@ paginas = [home, lancamentos, dashboard]
 if st.session_state["investimentos_ativo"]:
     paginas.append(st.Page("pages/04_Investimentos.py", title="Investimentos", icon="💎"))
 paginas.append(patrimonio)
+paginas.append(ricardo)
 paginas.append(configuracoes)
 
 pg = st.navigation(paginas)
