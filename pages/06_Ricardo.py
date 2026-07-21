@@ -243,10 +243,10 @@ with aba_renda:
             else:
                 anos = achou / 12
                 val = _total_proj(base_t + achou)
-                st.write(
-                    f"No ritmo atual, a renda passiva chega a "
-                    f"**R$ {meta_rp:,.0f}/mês** em **~{achou} meses** "
-                    f"(~{anos:.1f} anos), atingindo R$ {val:,.0f}.")
+                c_meta1, c_meta2 = st.columns(2)
+                c_meta1.metric("Tempo até a meta", f"{achou} meses",
+                               help=f"~{anos:.1f} anos")
+                c_meta2.metric("Renda ao atingir", f"R$ {val:,.0f}/mês")
                 st.caption(
                     "Projeção linear por fonte (FIIs estável, Ações média "
                     "recorrente, Renda Fixa reconstruindo pós-Master). Novos "
