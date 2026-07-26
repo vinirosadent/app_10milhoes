@@ -108,6 +108,28 @@ div[data-testid="stButton"] > button[data-testid="baseButton-primary"]:hover{
 .stTabs [data-baseweb="tab"]{ font-weight:600; color:var(--muted); border-radius:10px 10px 0 0; }
 .stTabs [aria-selected="true"]{ color:var(--primary)!important; }
 
+/* ---- cards genericos (st.container(border=True)) ---- */
+[data-testid="stVerticalBlockBorderWrapper"]{
+  border:1px solid var(--border)!important; border-radius:var(--radius-sm)!important;
+  background:var(--surface); box-shadow:var(--shadow);
+}
+
+/* ---- rotulo/valor dentro de um cartao de categoria (Patrimonio) ---- */
+.pat-label{
+  color:var(--muted); font-weight:600; font-size:.74rem;
+  text-transform:uppercase; letter-spacing:.04em;
+}
+.pat-tag{
+  display:inline-block; margin-left:.4rem; padding:.06rem .5rem;
+  border-radius:999px; background:var(--primary-10); color:var(--primary-d);
+  font-size:.66rem; font-weight:700; text-transform:none; letter-spacing:0;
+  vertical-align:middle;
+}
+.pat-liquido{
+  font-family:var(--font-body); color:var(--ink); font-weight:700;
+  font-size:1.05rem; font-variant-numeric:tabular-nums; margin-top:.35rem;
+}
+
 /* ---- expander / dataframe / alertas ---- */
 [data-testid="stExpander"]{
   border:1px solid var(--border)!important; border-radius:var(--radius-sm)!important;

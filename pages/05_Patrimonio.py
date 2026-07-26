@@ -174,11 +174,10 @@ else:
     valores_form = {}
     total_preview = 0.0
 
-    # Cabecalho da "tabela" de entrada.
-    h1, h2, h3 = st.columns([3, 2, 2])
-    h1.markdown("**Categoria**")
-    h2.markdown("**Valor bruto (SGD)**")
-    h3.markdown("**Conta no patrimônio**")
+    st.caption("Um cartão por categoria: nome da conta à esquerda, valor bruto "
+               "editável à direita. Contas SRS mostram também o valor líquido "
+               "(com o desconto já aplicado) — nas demais, bruto e líquido são "
+               "o mesmo número, então não repetimos.")
 
     for _, c in cats.iterrows():
         cid = int(c["id"])
@@ -186,25 +185,33 @@ else:
         eh_srs = abs(fator - 1.0) > 1e-9
         default_val = float(prefill.get(cid, 0.0))
 
-        col_n, col_v, col_liq = st.columns([3, 2, 2])
+        # Cada categoria vira um cartao com borda propria (container(border=True)):
+        # isola visualmente uma linha da outra mesmo no mobile, onde as colunas
+        # empilham (sem isso, tudo virava um fluxo unico sem hierarquia).
+        with st.container(border=True):
+            col_n, col_v = st.columns([3, 2])
 
-        nome_disp = f"**{c['nome']}**"
-        if eh_srs:
-            nome_disp += f"  \n_SRS · conta ×{fator:.2f}_"
-        col_n.markdown(nome_disp)
+            # Nome como rotulo pequeno/discreto (nao compete com o valor). Tag
+            # em pilula avisa que e conta SRS sem depender so do negrito.
+            tag = f' <span class="pat-tag">SRS ×{fator:.2f}</span>' if eh_srs else ""
+            col_n.markdown(f'<div class="pat-label">{c["nome"]}{tag}</div>',
+                            unsafe_allow_html=True)
 
-        # Chave inclui ano+mes: trocar de mes recarrega o pre-preenchimento
-        # (evita o number_input "grudar" no valor do mes anterior).
-        val = col_v.number_input(
-            c["nome"], min_value=0.0, value=default_val, step=100.0,
-            format="%.0f", key=f"pat_val_{cid}_{ano_sel}_{nro_mes_sel}",
-            label_visibility="collapsed")
+            # Chave inclui ano+mes: trocar de mes recarrega o pre-preenchimento
+            # (evita o number_input "grudar" no valor do mes anterior).
+            val = col_v.number_input(
+                c["nome"], min_value=0.0, value=default_val, step=100.0,
+                format="%.0f", key=f"pat_val_{cid}_{ano_sel}_{nro_mes_sel}",
+                label_visibility="collapsed")
 
-        liquido = val * fator
-        if eh_srs:
-            col_liq.markdown(f"**SGD {liquido:,.0f}**  \n_bruto SGD {val:,.0f}_")
-        else:
-            col_liq.markdown(f"SGD {liquido:,.0f}")
+            liquido = val * fator
+            if eh_srs:
+                # So mostra o liquido separado quando ele DIFERE do bruto (SRS).
+                # Nas contas normais (fator 1.00) seria o mesmo numero de novo.
+                # A tag "SRS x0.71" ja explica o calculo, entao aqui e so o
+                # numero — sem repetir a formula por extenso.
+                st.markdown(f'<span class="pat-liquido">SGD {liquido:,.0f}</span>',
+                            unsafe_allow_html=True)
 
         valores_form[cid] = val
         total_preview += liquido
