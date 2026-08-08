@@ -59,6 +59,7 @@ if "investimentos_ativo" not in st.session_state:
 paginas = [home, lancamentos, dashboard]
 if st.session_state["investimentos_ativo"]:
     paginas.append(st.Page("pages/04_Investimentos.py", title="Investimentos", icon="💎"))
+    paginas.append(st.Page("pages/07_Dividendos_Fundos.py", title="Dividendos", icon="💰"))
 paginas.append(patrimonio)
 paginas.append(ricardo)
 paginas.append(configuracoes)
