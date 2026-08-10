@@ -33,6 +33,7 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).parent.parent))
 from core import charts
+from core.charts import fmt_moeda_md as _m
 from core.auth import get_current_household_id
 from core.projecoes import (
     get_parametros, set_parametro, get_patrimonio_detalhado,
@@ -163,37 +164,44 @@ if faltantes:
 # ── Controles ─────────────────────────────────────────────────────────────
 with st.container(border=True):
     st.markdown("##### Quanto eu vou investir por mês")
-    st.caption("O histórico serve de ponto de partida — o número final é sua decisão.")
 
-    c1, c2 = st.columns([1, 2])
-    with c1:
-        janela = st.radio("Referência", [12, 24], horizontal=True,
-                          key="proj_janela",
-                          format_func=lambda x: f"{x} meses",
-                          help="Janela do histórico usada como sugestão. Meses sem "
-                               "aporte contam como zero.")
-    ritmo_base = ritmo_aporte(df_ap, ano_ref, mes_ref, janela)
+    ritmo_12 = ritmo_aporte(df_ap, ano_ref, mes_ref, 12)
+    ritmo_24 = ritmo_aporte(df_ap, ano_ref, mes_ref, 24)
+    _OPCOES = {
+        "Média dos últimos 12 meses": ritmo_12,
+        "Média dos últimos 24 meses": ritmo_24,
+        "Definir um valor": None,
+    }
+    modo = st.radio(
+        "Base do aporte", list(_OPCOES), key="proj_modo_aporte",
+        help="As duas primeiras usam o seu histórico. A terceira libera o campo "
+             "para você dizer quanto pretende investir daqui pra frente.")
 
-    # O number_input com `key` ignora o `value` a partir do 2o rerun (mesma
-    # armadilha do st.radio). Sem reancorar, trocar 12<->24 meses nao mudaria o
-    # campo e a "sugestao" viraria letra morta. Entao: quando a JANELA muda,
-    # reescrevemos a chave com o ritmo novo. Edicao manual do usuario e
-    # preservada ate ele trocar de janela outra vez.
-    if st.session_state.get("_proj_janela_ant") != janela:
-        st.session_state["_proj_janela_ant"] = janela
-        st.session_state["proj_aporte"] = float(round(ritmo_base, 2))
-    with c2:
+    if modo == "Definir um valor":
+        # O number_input com `key` ignora o `value` a partir do 2o rerun. Ao
+        # ENTRAR no modo manual semeamos o campo com a media de 12 meses, para o
+        # usuario partir de um numero real em vez de zero; depois disso o valor
+        # digitado manda e nao e' mais sobrescrito.
+        if "proj_aporte" not in st.session_state:
+            st.session_state["proj_aporte"] = float(round(ritmo_12, 2))
         aporte_base = st.number_input(
             "Aporte mensal planejado (SGD)", min_value=0.0, step=250.0,
             key="proj_aporte",
-            help=f"Sugestão pelo histórico de {janela} meses: "
-                 f"{charts.fmt_moeda(ritmo_base)}/mês. Edite livremente — esta é "
-                 "a variável que você de fato controla.")
-    if abs(aporte_base - ritmo_base) > 1:
-        _dif = aporte_base - ritmo_base
-        st.caption(f"{charts.fmt_moeda(abs(_dif))}/mês "
-                   f"{'acima' if _dif > 0 else 'abaixo'} do seu ritmo dos últimos "
-                   f"{janela} meses ({charts.fmt_moeda(ritmo_base)}).")
+            help="Quanto você pretende investir por mês daqui pra frente.")
+        janela, ritmo_base = 12, ritmo_12
+        _dif = aporte_base - ritmo_12
+        if abs(_dif) > 1:
+            st.caption(
+                f"{_m(abs(_dif))}/mês {'acima' if _dif > 0 else 'abaixo'} do seu "
+                f"ritmo real dos últimos 12 meses ({_m(ritmo_12)})."
+            )
+    else:
+        janela      = 12 if "12" in modo else 24
+        ritmo_base  = _OPCOES[modo]
+        aporte_base = ritmo_base
+        st.metric(f"Média dos últimos {janela} meses", charts.fmt_moeda(ritmo_base),
+                  help="Soma de tudo que foi para investimento na janela, dividida "
+                       "pela janela cheia. Mês sem aporte conta como zero.")
 
 # ── Fontes adicionais de aporte ───────────────────────────────────────────
 div_mes = ritmo_aporte(df_div, ano_ref, mes_ref, 12, coluna="dividendo")
@@ -208,8 +216,11 @@ with st.container(border=True):
             value=False,
             help="O pagamento do apartamento terminou em ago/2026. Esse dinheiro "
                  "só vira patrimônio se for redirecionado para investimento.")
-        pct_lib = st.slider("Quanto dele vai para investimento", 0, 100, 100, 5,
-                            format="%d%%", disabled=not usar_lib) / 100.0
+        # Slider so aparece quando o toggle esta ligado: um controle desabilitado
+        # ocupa espaco e sugere uma opcao que nao esta em jogo.
+        pct_lib = (st.slider("Quanto dele vai para investimento", 0, 100, 100, 5,
+                             format="%d%%", key="proj_pct_lib") / 100.0
+                   if usar_lib else 0.0)
 
     with f2:
         # Os dividendos hoje SAEM da carteira (reinvestido=FALSE), entao nao estao
@@ -220,8 +231,9 @@ with st.container(border=True):
             value=False, disabled=div_mes <= 0,
             help="Hoje os dividendos saem em dinheiro e não voltam para a "
                  "carteira. Ligue para simular o efeito de reinvesti-los.")
-        pct_div = st.slider("Quanto dos dividendos é reinvestido", 0, 100, 100, 5,
-                            format="%d%%", disabled=not usar_div) / 100.0
+        pct_div = (st.slider("Quanto dos dividendos é reinvestido", 0, 100, 100, 5,
+                             format="%d%%", key="proj_pct_div") / 100.0
+                   if usar_div else 0.0)
 
 aporte_extra_apto = liberado_par * pct_lib if usar_lib else 0.0
 aporte_extra_div  = div_mes * pct_div if usar_div else 0.0
@@ -250,10 +262,10 @@ with st.container(border=True):
 
 if aporte_extra > 0:
     st.caption(
-        f"Aporte usado na projeção: **{charts.fmt_moeda(aporte_mes)}/mês** "
-        f"= {charts.fmt_moeda(aporte_base)} planejado"
-        + (f" + {charts.fmt_moeda(aporte_extra_apto)} do apartamento" if aporte_extra_apto else "")
-        + (f" + {charts.fmt_moeda(aporte_extra_div)} de dividendos" if aporte_extra_div else "")
+        f"Aporte usado na projeção: **{_m(aporte_mes)}/mês** "
+        f"= {_m(aporte_base)} planejado"
+        + (f" + {_m(aporte_extra_apto)} do apartamento" if aporte_extra_apto else "")
+        + (f" + {_m(aporte_extra_div)} de dividendos" if aporte_extra_div else "")
         + "."
     )
 
@@ -314,33 +326,37 @@ with k4:
 
 # ── As tres perguntas ─────────────────────────────────────────────────────
 st.markdown("### As três perguntas")
+st.caption("A mesma equação resolvida em três variáveis diferentes. "
+           "O **piso** assume retorno zero: é o que acontece só com o dinheiro que você põe.")
 q1, q2, q3 = st.columns(3)
+
+_rot_cen = f"A {retorno*100:.1f}% ao ano"
 
 with q1:
     with st.container(border=True):
         st.markdown("**Quando eu chego na meta?**")
         m_piso = meses_ate_meta(base_proj, aporte_mes, 0.0, meta)
         m_cen  = meses_ate_meta(base_proj, aporte_mes, retorno, meta)
-        for rot, mm_, cor in (("Piso (0%)", m_piso, C_PISO), (f"A {retorno*100:.1f}%", m_cen, C_CEN)):
-            quando = ""
+        for rot, mm_ in (("Piso (0%)", m_piso), (_rot_cen, m_cen)):
             if mm_:
                 aa, m2_ = somar_meses(ano_ref, mes_ref, mm_)
-                quando = f" · {charts.MESES_ABREV[m2_-1]}/{aa}"
-            st.markdown(f"<span style='color:{cor};font-weight:700'>{rot}</span><br>"
-                        f"<span style='font-size:1.25rem'>{formatar_prazo(mm_)}</span>"
-                        f"<span style='color:#64748B'>{quando}</span>",
-                        unsafe_allow_html=True)
+                quando = f"{charts.MESES_ABREV[m2_-1]}/{aa}"
+            else:
+                quando = "—"
+            st.metric(rot, formatar_prazo(mm_), help=f"Chega em {quando}.")
+            st.caption(quando)
 
 with q2:
     with st.container(border=True):
-        st.markdown(f"**Quanto eu tenho em {charts.MESES_ABREV[int(mes_alvo)-1]}/{int(ano_alvo)}?**")
+        st.markdown(f"**Quanto eu tenho em "
+                    f"{charts.MESES_ABREV[int(mes_alvo)-1]}/{int(ano_alvo)}?**")
         v_piso = valor_em(base_proj, aporte_mes, 0.0, horizonte)
         v_cen  = valor_em(base_proj, aporte_mes, retorno, horizonte)
-        st.markdown(f"<span style='color:{C_PISO};font-weight:700'>Piso (0%)</span><br>"
-                    f"<span style='font-size:1.25rem'>{charts.fmt_moeda(v_piso)}</span><br>"
-                    f"<span style='color:{C_CEN};font-weight:700'>A {retorno*100:.1f}%</span><br>"
-                    f"<span style='font-size:1.25rem'>{charts.fmt_moeda(v_cen)}</span>",
-                    unsafe_allow_html=True)
+        st.metric("Piso (0%)", charts.fmt_moeda(v_piso),
+                  help="Só os aportes, sem nenhum retorno.")
+        st.metric(_rot_cen, charts.fmt_moeda(v_cen),
+                  delta=charts.fmt_moeda(v_cen - v_piso),
+                  help="A diferença para o piso é o que o mercado precisaria entregar.")
 
 with q3:
     with st.container(border=True):
@@ -348,20 +364,18 @@ with q3:
         a_piso = aporte_necessario(base_proj, meta, 0.0, horizonte)
         a_cen  = aporte_necessario(base_proj, meta, retorno, horizonte)
         if a_piso is None:
-            st.write("Defina uma data-alvo no futuro.")
+            st.info("Defina uma data-alvo no futuro.")
         else:
-            st.markdown(f"<span style='color:{C_PISO};font-weight:700'>Piso (0%)</span><br>"
-                        f"<span style='font-size:1.25rem'>{charts.fmt_moeda(a_piso)}/mês</span><br>"
-                        f"<span style='color:{C_CEN};font-weight:700'>A {retorno*100:.1f}%</span><br>"
-                        f"<span style='font-size:1.25rem'>{charts.fmt_moeda(a_cen)}/mês</span>",
-                        unsafe_allow_html=True)
+            st.metric("Piso (0%)", charts.fmt_moeda(a_piso) + "/mês",
+                      help="Sem contar com retorno nenhum.")
+            st.metric(_rot_cen, charts.fmt_moeda(a_cen) + "/mês")
             folga = aporte_mes - a_cen
-            st.caption(
-                f"Você aporta {charts.fmt_moeda(aporte_mes)}/mês — "
-                + (f"**{charts.fmt_moeda(folga)} acima** do necessário. ✅"
-                   if folga >= 0 else
-                   f"**{charts.fmt_moeda(abs(folga))} abaixo** do necessário.")
-            )
+            if folga >= 0:
+                st.success(f"Você aporta {_m(aporte_mes)}/mês — "
+                           f"{_m(folga)} acima do necessário.", icon="✅")
+            else:
+                st.warning(f"Você aporta {_m(aporte_mes)}/mês — "
+                           f"faltam {_m(abs(folga))}/mês.", icon="⚠️")
 
 # ── Grafico: historico + duas projecoes ───────────────────────────────────
 st.markdown("### Trajetória")
@@ -395,8 +409,8 @@ fig.add_hline(y=meta, line=dict(color=C_META, width=1.5, dash="dot"),
 charts.aplicar_tema(fig, altura=420)
 st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CFG)
 st.caption(
-    f"Parte de {charts.fmt_moeda(base_proj)} ({rotulo_base.lower()} em {rotulo_ref}) "
-    f"e soma {charts.fmt_moeda(aporte_mes)}/mês. A linha pontilhada cinza é só o "
+    f"Parte de {_m(base_proj)} ({rotulo_base.lower()} em {rotulo_ref}) "
+    f"e soma {_m(aporte_mes)}/mês. A linha pontilhada cinza é só o "
     "dinheiro aportado, sem nenhum retorno — o piso."
     + ("" if incluir_imovel else " O imóvel está fora.")
 )
@@ -408,29 +422,25 @@ if cmp_:
     b1, b2 = st.columns(2)
     with b1:
         with st.container(border=True):
-            st.markdown(f"**Jan–{charts.MESES_ABREV[mes_ref-1]} de {cmp_['ytd_ano']} "
-                        f"vs {cmp_['ytd_ano_anterior']}**")
             v = cmp_["ytd_var"]
-            st.markdown(f"<span style='font-size:1.5rem;font-weight:700'>"
-                        f"{charts.fmt_moeda(cmp_['ytd'])}</span> "
-                        f"<span style='color:{'#059669' if (v or 0) >= 0 else '#DC2626'};"
-                        f"font-weight:700'>{('%+.1f%%' % v) if v is not None else '—'}</span><br>"
-                        f"<span style='color:#64748B'>antes: "
-                        f"{charts.fmt_moeda(cmp_['ytd_anterior'])}</span>",
-                        unsafe_allow_html=True)
+            st.metric(
+                f"Jan–{charts.MESES_ABREV[mes_ref-1]} de {cmp_['ytd_ano']} "
+                f"vs {cmp_['ytd_ano_anterior']}",
+                charts.fmt_moeda(cmp_["ytd"]),
+                delta=(f"{v:+.1f}%" if v is not None else None),
+                help=f"No mesmo período de {cmp_['ytd_ano_anterior']}: "
+                     f"{charts.fmt_moeda(cmp_['ytd_anterior'])}.")
             st.caption("Mesma quantidade de meses dos dois lados — ano parcial não "
                        "vira queda artificial.")
     with b2:
         with st.container(border=True):
-            st.markdown("**Últimos 12 meses vs 12 anteriores**")
             v = cmp_["rolling12_var"]
-            st.markdown(f"<span style='font-size:1.5rem;font-weight:700'>"
-                        f"{charts.fmt_moeda(cmp_['rolling12'])}</span> "
-                        f"<span style='color:{'#059669' if (v or 0) >= 0 else '#DC2626'};"
-                        f"font-weight:700'>{('%+.1f%%' % v) if v is not None else '—'}</span><br>"
-                        f"<span style='color:#64748B'>antes: "
-                        f"{charts.fmt_moeda(cmp_['rolling12_anterior'])}</span>",
-                        unsafe_allow_html=True)
+            st.metric(
+                "Últimos 12 meses vs 12 anteriores",
+                charts.fmt_moeda(cmp_["rolling12"]),
+                delta=(f"{v:+.1f}%" if v is not None else None),
+                help=f"Nos 12 meses anteriores: "
+                     f"{charts.fmt_moeda(cmp_['rolling12_anterior'])}.")
             st.caption("Leitura de ritmo: não depende de onde o calendário cortou.")
 
 # ── Esforco real por ano (financeiro + imovel) ────────────────────────────

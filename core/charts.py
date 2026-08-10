@@ -78,9 +78,10 @@ def aplicar_tema(fig: go.Figure, titulo=None, altura: int = 340,
         (builders de barra horizontal/rosca trocam pra 'closest').
       - eixo y em dinheiro (S$, milhar) quando moeda_eixo_y=True.
     """
-    fig.update_layout(
-        title=(dict(text=titulo, x=0.0, xanchor="left",
-                    font=dict(size=16, color="#1F2933")) if titulo else None),
+    # `title=None` NAO e' o mesmo que nao mexer no titulo: o Plotly.js recebe o
+    # campo explicitamente vazio e algumas versoes desenham a string "undefined"
+    # acima da legenda. Por isso o titulo so entra no dict quando existe.
+    layout = dict(
         height=altura,
         margin=dict(l=10, r=10, t=48 if titulo else 16, b=10),
         paper_bgcolor="rgba(0,0,0,0)",
@@ -91,6 +92,10 @@ def aplicar_tema(fig: go.Figure, titulo=None, altura: int = 340,
                     xanchor="left", x=0.0),
         hovermode="x unified",
     )
+    if titulo:
+        layout["title"] = dict(text=titulo, x=0.0, xanchor="left",
+                               font=dict(size=16, color="#1F2933"))
+    fig.update_layout(**layout)
     fig.update_xaxes(showgrid=False, showline=True, linecolor="#CBD5E1",
                      ticks="outside", tickcolor="#CBD5E1")
     fig.update_yaxes(showgrid=True, gridcolor="rgba(148,163,184,0.25)",
@@ -99,6 +104,19 @@ def aplicar_tema(fig: go.Figure, titulo=None, altura: int = 340,
     if moeda_eixo_y:
         fig.update_yaxes(tickprefix=f"{SIMBOLO_MOEDA} ", separatethousands=True)
     return fig
+
+
+def fmt_moeda_md(valor, casas: int = 0, simbolo: str = SIMBOLO_MOEDA) -> str:
+    """
+    Igual a fmt_moeda, mas com o cifrao ESCAPADO para uso em markdown/caption.
+
+    Por que isso existe: o Streamlit interpreta `$...$` como LaTeX. Como o
+    simbolo daqui e "S$", qualquer texto com DOIS valores monetarios vira
+    formula — o miolo aparece em fonte matematica e, se houver HTML no meio, ele
+    vaza cru na tela. Em st.metric nao ha esse risco (o valor nao passa por
+    markdown); em st.markdown, st.caption e st.write, use esta funcao.
+    """
+    return fmt_moeda(valor, casas, simbolo).replace("$", "\\$")
 
 
 def linha_temporal(df, x, series, titulo=None, area=False, altura: int = 340,

@@ -30,7 +30,14 @@ html, body, [class*="css"], .stApp, [data-testid="stMarkdownContainer"]{
   font-family:var(--font-body);
 }
 .stApp{ background:var(--bg); }
-.main .block-container{ padding-top:2.2rem; padding-bottom:3rem; max-width:1280px; }
+/* Largura maxima do conteudo. O Streamlit renomeou o container principal ao
+   longo das versoes: `.main .block-container` valia ate ~1.3x, e as versoes
+   atuais usam `stMainBlockContainer`. Com so o seletor antigo o CSS nao pega
+   mais e o conteudo se espalha por monitores largos, ficando ilegivel. Os tres
+   seletores cobrem versoes antigas e novas. */
+.main .block-container,
+[data-testid="stMainBlockContainer"],
+.stMainBlockContainer{ padding-top:2.2rem; padding-bottom:3rem; max-width:1280px; }
 
 /* titulos no serif elegante */
 h1,h2,h3,h4{
