@@ -204,25 +204,90 @@ else:
         else:
             st.info("Registre aportes/rendimentos por produto para ver esta área.")
 
-    # ── Rendimento: barras (mes, +/-) + linha acumulada (eixo secundario) ──
-    st.markdown("#### Rendimento mensal e acumulado")
-    cores_rend = [C_REND if v >= 0 else C_NEG for v in df_evo["rendimento"]]
-    figr = make_subplots(specs=[[{"secondary_y": True}]])
+    # ── Rendimento: periodo + granularidade, mensal e acumulado separados ──
+    # Por que mudou: o grafico antigo empilhava ~80 barras mensais desde 2019 num
+    # eixo so, com a linha do acumulado num eixo secundario. Dois problemas:
+    #   (a) barra de ~15px nao se le, e a variacao mensal de mercado e ruido —
+    #       oitenta pontos de ruido informam menos que oito pontos anuais;
+    #   (b) eixo duplo faz o cruzamento das series parecer significativo quando
+    #       ele so depende da escala escolhida (Tufte/Few).
+    # Agora: o usuario escolhe o periodo e a granularidade, e as duas series vao
+    # em paineis empilhados compartilhando o eixo x (small multiples).
+    st.markdown("#### Rendimento")
+
+    cg1, cg2 = st.columns([1.3, 1])
+    with cg1:
+        periodo_op = st.radio(
+            "Período", ["12 meses", "24 meses", "5 anos", "Tudo"],
+            index=1, horizontal=True, key="inv_rend_periodo")
+    _meses_periodo = {"12 meses": 12, "24 meses": 24, "5 anos": 60, "Tudo": None}
+    _n = _meses_periodo[periodo_op]
+
+    df_r = df_evo.sort_values("periodo").copy()
+    if _n:
+        df_r = df_r.tail(_n)
+
+    # Default de granularidade pela janela: ate 24 meses o mes ainda se le;
+    # acima disso, agregar e o que torna o grafico legivel.
+    _gran_default = 0 if len(df_r) <= 24 else (1 if len(df_r) <= 60 else 2)
+    _opcoes_gran = ["Mês", "Trimestre", "Ano"]
+    # ATENCAO: st.radio com `key` ignora o `index` a partir do 2o rerun — assim
+    # que a chave existe em session_state, o valor guardado manda. Sem reancorar
+    # a chave na mao, quem abrisse em "24 meses" (default "Mês") e trocasse para
+    # "Tudo" continuaria em "Mês", ou seja, exatamente as 85 barras ilegiveis que
+    # este bloco veio eliminar. Entao: quando o PERIODO muda, reescrevemos a
+    # granularidade com o default da janela nova. Escolha manual do usuario e
+    # preservada enquanto ele nao trocar de periodo de novo.
+    if st.session_state.get("_inv_rend_periodo_ant") != periodo_op:
+        st.session_state["_inv_rend_periodo_ant"] = periodo_op
+        st.session_state["inv_rend_gran"] = _opcoes_gran[_gran_default]
+    with cg2:
+        gran = st.radio("Ver por", _opcoes_gran,
+                        index=_gran_default, horizontal=True, key="inv_rend_gran")
+
+    if gran == "Mês":
+        df_r["_bucket"] = df_r["periodo"]
+        _fmt_hover = "%{x|%b/%Y}"
+    elif gran == "Trimestre":
+        df_r["_bucket"] = df_r["periodo"].dt.to_period("Q").dt.start_time
+        _fmt_hover = "%{x|%b/%Y}"
+    else:
+        df_r["_bucket"] = df_r["periodo"].dt.to_period("Y").dt.start_time
+        _fmt_hover = "%{x|%Y}"
+
+    df_g = (df_r.groupby("_bucket", as_index=False)
+                .agg(rendimento=("rendimento", "sum")))
+    # O acumulado e recalculado DENTRO da janela: mostra o ganho do periodo
+    # escolhido, nao um numero herdado de 2019 que nao se relaciona com o que
+    # esta na tela.
+    df_g["acum"] = df_g["rendimento"].cumsum()
+
+    cores_rend = [C_REND if v >= 0 else C_NEG for v in df_g["rendimento"]]
+    figr = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                         vertical_spacing=0.07, row_heights=[0.58, 0.42])
     figr.add_trace(go.Bar(
-        x=df_evo["periodo"], y=df_evo["rendimento"], name="Rendimento do mês",
+        x=df_g["_bucket"], y=df_g["rendimento"], name="Rendimento",
         marker_color=cores_rend,
-        hovertemplate="%{x|%b/%Y}<br>Rendimento: SGD %{y:,.0f}<extra></extra>"),
-        secondary_y=False)
+        hovertemplate=_fmt_hover + "<br>Rendimento: SGD %{y:,.0f}<extra></extra>"),
+        row=1, col=1)
     figr.add_trace(go.Scatter(
-        x=df_evo["periodo"], y=df_evo["rendimento_acum"], name="Acumulado",
+        x=df_g["_bucket"], y=df_g["acum"], name="Acumulado no período",
         mode="lines", line=dict(color=C_TOTAL, width=2),
-        hovertemplate="%{x|%b/%Y}<br>Acumulado: SGD %{y:,.0f}<extra></extra>"),
-        secondary_y=True)
-    figr = fmt(figr, height=300)
-    figr.update_yaxes(title_text="Mês", tickprefix="", secondary_y=False)
-    figr.update_yaxes(title_text="Acum.", tickprefix="", secondary_y=True,
-                      gridcolor="rgba(0,0,0,0)")
+        fill="tozeroy", fillcolor=C_REND_FILL,
+        hovertemplate=_fmt_hover + "<br>Acumulado: SGD %{y:,.0f}<extra></extra>"),
+        row=2, col=1)
+    figr = fmt(figr, height=420)
+    figr.update_yaxes(title_text="No período", tickprefix="", row=1, col=1)
+    figr.update_yaxes(title_text="Acumulado", tickprefix="", row=2, col=1)
+    figr.update_xaxes(showticklabels=False, row=1, col=1)
     st.plotly_chart(figr, use_container_width=True, config=PLOTLY_CFG)
+
+    _rend_periodo = float(df_g["rendimento"].sum())
+    st.caption(
+        f"Soma do período exibido: SGD {_rend_periodo:,.0f} em "
+        f"{len(df_r)} meses. As duas séries dividem o mesmo eixo de tempo — "
+        "sem eixo secundário, onde o cruzamento das linhas seria arbitrário."
+    )
     if total_rendimento == 0:
         st.caption("Sem rendimentos lançados ainda. Use **📈 Rendimentos e dividendos** abaixo.")
 

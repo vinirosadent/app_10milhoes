@@ -61,6 +61,7 @@ if st.session_state["investimentos_ativo"]:
     paginas.append(st.Page("pages/04_Investimentos.py", title="Investimentos", icon="💎"))
     paginas.append(st.Page("pages/07_Dividendos_Fundos.py", title="Dividendos", icon="💰"))
 paginas.append(patrimonio)
+paginas.append(st.Page("pages/08_Projecoes.py", title="Projeções", icon="🔭"))
 paginas.append(ricardo)
 paginas.append(configuracoes)
 

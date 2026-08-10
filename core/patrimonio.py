@@ -44,7 +44,7 @@ def get_categorias(somente_ativas=False, household_id=None):
     False traz todas (tela de gestao de categorias).
     """
     hh = _hh(household_id)
-    sql = ("SELECT id, nome, fator_liquido, ativa, ordem "
+    sql = ("SELECT id, nome, fator_liquido, ativa, ordem, investivel "
            "FROM patrimonio_categorias WHERE household_id=%s")
     params = [hh]
     if somente_ativas:
@@ -184,37 +184,52 @@ def apagar_valor(categoria_id, ano, nro_mes, household_id=None):
 
 
 # -- PATRIMONIO (total e serie) --------------------------------------------
-def get_patrimonio_total_mes(ano, nro_mes, household_id=None):
+def get_patrimonio_total_mes(ano, nro_mes, household_id=None,
+                             apenas_investivel=False):
     """
     Patrimonio LIQUIDO de um mes (em SGD): soma de (valor_bruto * fator_liquido)
     de todas as categorias daquele mes. Ja aplica o 0.71 das contas SRS.
+
+    apenas_investivel=True exclui as categorias com investivel=FALSE (imovel de
+    uso). Ver a nota em get_patrimonio_serie sobre por que as duas visoes existem.
     """
     hh = _hh(household_id)
+    filtro = " AND c.investivel = TRUE" if apenas_investivel else ""
     return float(query_df(
         "SELECT COALESCE(SUM(r.valor_bruto * c.fator_liquido), 0) AS total "
         "FROM patrimonio_registros r "
         "JOIN patrimonio_categorias c ON c.id = r.categoria_id "
-        "WHERE r.household_id=%s AND r.ano=%s AND r.nro_mes=%s",
+        "WHERE r.household_id=%s AND r.ano=%s AND r.nro_mes=%s" + filtro,
         [hh, ano, nro_mes],
     )["total"].values[0])
 
 
-def get_patrimonio_serie(household_id=None):
+def get_patrimonio_serie(household_id=None, apenas_investivel=False):
     """
-    Serie mensal do patrimonio TOTAL ao longo de todos os anos — base do grafico
+    Serie mensal do patrimonio ao longo de todos os anos — base do grafico
     principal. Colunas: ano, nro_mes, mes (nome), periodo (date 1o dia do mes),
     patrimonio. O total ja e LIQUIDO (valor_bruto * fator_liquido, SRS = 0.71).
     Soma TODAS as categorias, inclusive encerradas — uma conta que existiu no
     passado deve continuar contando nos meses em que existiu.
+
+    apenas_investivel=True exclui as categorias com investivel=FALSE — hoje, o
+    apartamento. As duas visoes respondem perguntas diferentes e ambas sao
+    legitimas:
+      - TOTAL      -> "quanto eu tenho": inclui o imovel, que e patrimonio real.
+      - INVESTIVEL -> "com quanto eu posso contar": exclui o imovel de uso, que
+                      nao da pra consumir 4% ao ano sem vender.
+    A segunda e a base correta das projecoes e do calculo de independencia
+    financeira; a primeira e a base do balanco.
     """
     hh = _hh(household_id)
+    filtro = " AND c.investivel = TRUE" if apenas_investivel else ""
     df = query_df(
         "SELECT r.ano, r.nro_mes, m.nome AS mes, "
         "       SUM(r.valor_bruto * c.fator_liquido) AS patrimonio "
         "FROM patrimonio_registros r "
         "JOIN patrimonio_categorias c ON c.id = r.categoria_id "
         "JOIN meses m ON m.nro = r.nro_mes "
-        "WHERE r.household_id=%s "
+        "WHERE r.household_id=%s" + filtro + " "
         "GROUP BY r.ano, r.nro_mes, m.nome "
         "ORDER BY r.ano, r.nro_mes",
         [hh],

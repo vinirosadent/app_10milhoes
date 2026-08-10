@@ -66,7 +66,30 @@ if st.session_state.get("pat_msg"):
 # ══════════════════════════════════════════════════════════════════════════
 # VISAO GERAL — patrimonio total ao longo do tempo (so o total)
 # ══════════════════════════════════════════════════════════════════════════
-serie = get_patrimonio_serie()
+# ── Com ou sem o apartamento ──────────────────────────────────────────────
+# Duas perguntas diferentes, ambas legitimas:
+#   COM imovel -> "quanto eu tenho": o apartamento e patrimonio real, entra no
+#                 balanco.
+#   SEM imovel -> "com quanto eu posso contar": nao da pra consumir 4% ao ano de
+#                 um imovel de uso sem vende-lo, entao ele nao sustenta a
+#                 projecao nem o calculo de independencia financeira.
+# A chave `incluir_imovel` e proposital global: a pagina de Projecoes le a MESMA
+# chave, entao o usuario escolhe uma vez e as duas telas concordam, em vez de
+# cada uma ter seu proprio interruptor e mostrarem numeros diferentes.
+_cats_all   = get_categorias()
+_tem_imovel = (not _cats_all.empty) and (not bool(_cats_all["investivel"].all()))
+if _tem_imovel:
+    st.toggle(
+        "Incluir apartamento no patrimônio",
+        key="incluir_imovel",
+        value=st.session_state.get("incluir_imovel", True),
+        help="Ligado: patrimônio total, com o imóvel. Desligado: só o "
+             "patrimônio investível, que é a base correta da projeção. "
+             "A escolha vale também na página de Projeções.",
+    )
+incluir_imovel = bool(st.session_state.get("incluir_imovel", True))
+
+serie = get_patrimonio_serie(apenas_investivel=not incluir_imovel)
 
 if serie.empty:
     st.info("Ainda não há patrimônio registrado. Preencha o primeiro mês "
@@ -101,6 +124,17 @@ else:
         c_media.metric("Média/mês", "—")
     c3.metric("🗓️ Meses registrados", f"{len(serie)}")
 
+    if _tem_imovel:
+        st.caption(
+            "Incluindo o apartamento. Como o imóvel tem histórico desde 2019 e as "
+            "contas financeiras começam em 2023, o trecho anterior a 2023 mostra "
+            "praticamente só o imóvel — o degrau em jan/2023 é a entrada das "
+            "outras contas, não um salto de patrimônio."
+            if incluir_imovel else
+            "Só patrimônio investível — o apartamento está fora. É a base correta "
+            "para projeção e independência financeira."
+        )
+
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=serie["periodo"], y=serie["patrimonio"], name="Patrimônio",
@@ -110,30 +144,19 @@ else:
     fig.update_yaxes(tickprefix="SGD ", tickformat=",.0f")
     st.plotly_chart(fmt(fig), use_container_width=True)
 
-    if tem_12m and media_mensal != 0:
-        proj_12m = patrimonio_atual + var_12m_abs
-        # meses do ultimo mes da serie ate dez/2032
-        ultima_data = serie_ord["periodo"].iloc[-1]
-        meses_ate_2032 = (2032 - ultima_data.year) * 12 + (12 - ultima_data.month)
-        if meses_ate_2032 > 0:
-            proj_dez2032 = patrimonio_atual + media_mensal * meses_ate_2032
-        else:
-            proj_dez2032 = patrimonio_atual
-        meta = 2_000_000
-        if patrimonio_atual >= meta:
-            tempo_meta = "meta ja atingida 🎉"
-        elif media_mensal > 0:
-            meses_meta = (meta - patrimonio_atual) / media_mensal
-            tempo_meta = f"~{int(meses_meta // 12)} anos e {int(round(meses_meta % 12))} meses"
-        else:
-            tempo_meta = "ritmo atual nao chega a meta"
-        st.markdown("#### 🔮 Projecao (ritmo dos ultimos 12 meses)")
-        st.caption(f"Media de SGD {media_mensal:,.0f}/mes nos ultimos 12 meses.")
-        pc = st.columns(3)
-        pc[0].metric("Em 12 meses", f"SGD {proj_12m:,.0f}")
-        pc[1].metric("Em Dez/2032", f"SGD {proj_dez2032:,.0f}")
-        pc[2].metric("Para SGD 2 mi", tempo_meta)
-        st.caption("Projecao linear (nao considera juros compostos nem mudanca no ritmo de aporte).")
+    # A projecao que existia aqui foi removida. Ela era linear
+    # (patrimonio + media_mensal x meses), o que mistura duas coisas de natureza
+    # oposta: o aporte, constante em valor absoluto, e o retorno de mercado,
+    # proporcional ao saldo. Pior, a media dos ultimos 12 meses inclui os
+    # pagamentos do apartamento — um fluxo que ACABOU em ago/2026 — entao com o
+    # imovel ligado ela projetava um ritmo que nao existe mais.
+    # A pagina 🔭 Projecoes faz a conta certa: aporte como fluxo, retorno como
+    # taxa sobre o saldo, aporte editavel e piso de 0% sempre visivel.
+    st.info(
+        "🔭 As projeções agora ficam na página **Projeções**, com aporte editável, "
+        "retorno ajustável e a linha de piso (0%) sempre à vista.",
+        icon="🔭",
+    )
 
 st.markdown("---")
 
@@ -218,9 +241,16 @@ else:
 
     st.markdown("")
     cm1, cm2 = st.columns([2, 1])
-    cm1.metric("Patrimônio do mês (prévia)", f"SGD {total_preview:,.0f}",
-               help="Soma de todas as categorias já com o fator aplicado "
-                    "(SRS ×0.71). É o valor que vai para o gráfico.")
+    # Esta previa e do FORMULARIO: soma o que esta sendo editado, incluindo o
+    # apartamento, independentemente do toggle. Filtra-la pelo toggle esconderia
+    # parte do que vai ser salvo. Mas deixar so "Patrimônio do mês" ao lado de um
+    # toggle que diz "sem apartamento" faz parecer que um dos dois esta errado —
+    # por isso o rotulo diz explicitamente que aqui e tudo.
+    cm1.metric("Total do mês (todas as categorias)", f"SGD {total_preview:,.0f}",
+               help="Soma de TUDO que está no formulário acima, já com o fator "
+                    "aplicado (SRS ×0.71) — inclusive categorias não-investíveis "
+                    "como o apartamento. O toggle no topo da página afeta só o "
+                    "gráfico e os indicadores, não o que você está salvando.")
     with cm2:
         st.markdown("")
         st.markdown("")
@@ -228,6 +258,11 @@ else:
                      key="pat_btn_salvar"):
             try:
                 n = salvar_mes(ano_sel, nro_mes_sel, valores_form)
+                # A pagina de Projecoes cacheia as leituras de patrimonio por 5
+                # minutos (st.cache_data). Sem limpar aqui, quem salvasse um mes
+                # e fosse para Projecoes veria os numeros antigos ate o TTL
+                # expirar — e concluiria que o app perdeu o lancamento.
+                st.cache_data.clear()
                 st.session_state["pat_msg"] = (
                     f"✅ {mes_sel}/{ano_sel} salvo ({n} categorias). "
                     f"Patrimônio do mês: SGD {total_preview:,.0f}."
@@ -256,7 +291,8 @@ else:
                 },
             )
             total_mes = float(det_sh["valor_liquido"].sum())
-            st.caption(f"Total líquido de {mes_sel}/{ano_sel}: **SGD {total_mes:,.0f}**.")
+            st.caption(f"Total líquido de {mes_sel}/{ano_sel}, todas as categorias: "
+                       f"**SGD {total_mes:,.0f}**.")
 
 st.markdown("---")
 
