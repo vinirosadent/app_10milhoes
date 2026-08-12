@@ -205,7 +205,14 @@ else:
     for _, c in cats.iterrows():
         cid = int(c["id"])
         fator = float(c["fator_liquido"])
-        eh_srs = abs(fator - 1.0) > 1e-9
+        # O fator != 1 tem DOIS significados possiveis, e confundi-los rotula
+        # errado: SRS usa o fator para o desagio de resgate antecipado (0.71);
+        # o apartamento usa o MESMO campo para taxa de cambio BRL->SGD (0.25).
+        # Sao coisas diferentes — desagio e uma penalidade sobre o proprio ativo,
+        # cambio e so unidade de medida. Distinguir pelo NOME evita a tag errada
+        # ("SRS x0.25" no apartamento, que nao tem nada de SRS).
+        eh_srs    = abs(fator - 1.0) > 1e-9 and "SRS" in c["nome"].upper()
+        eh_cambio = abs(fator - 1.0) > 1e-9 and not eh_srs
         default_val = float(prefill.get(cid, 0.0))
 
         # Cada categoria vira um cartao com borda propria (container(border=True)):
@@ -216,7 +223,12 @@ else:
 
             # Nome como rotulo pequeno/discreto (nao compete com o valor). Tag
             # em pilula avisa que e conta SRS sem depender so do negrito.
-            tag = f' <span class="pat-tag">SRS ×{fator:.2f}</span>' if eh_srs else ""
+            if eh_srs:
+                tag = f' <span class="pat-tag">SRS ×{fator:.2f}</span>'
+            elif eh_cambio:
+                tag = f' <span class="pat-tag">câmbio ×{fator:.2f}</span>'
+            else:
+                tag = ""
             col_n.markdown(f'<div class="pat-label">{c["nome"]}{tag}</div>',
                             unsafe_allow_html=True)
 
@@ -228,10 +240,10 @@ else:
                 label_visibility="collapsed")
 
             liquido = val * fator
-            if eh_srs:
-                # So mostra o liquido separado quando ele DIFERE do bruto (SRS).
-                # Nas contas normais (fator 1.00) seria o mesmo numero de novo.
-                # A tag "SRS x0.71" ja explica o calculo, entao aqui e so o
+            if eh_srs or eh_cambio:
+                # So mostra o liquido separado quando ele DIFERE do bruto (SRS ou
+                # cambio). Nas contas normais (fator 1.00) seria o mesmo numero
+                # de novo. A tag acima ja explica o calculo, entao aqui e so o
                 # numero — sem repetir a formula por extenso.
                 st.markdown(f'<span class="pat-liquido">SGD {liquido:,.0f}</span>',
                             unsafe_allow_html=True)
