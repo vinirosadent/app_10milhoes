@@ -61,13 +61,12 @@ with aba_renda:
         df["renda_passiva"] = df["valor"]
         df["t"] = df["ano"] * 12 + df["nro_mes"]
         df_mes = (df.groupby("periodo", as_index=False)
-                    .agg(renda_passiva=("renda_passiva", "sum"),
-                         capital_investido=("valor_investido", "sum"))
+                    .agg(renda_passiva=("renda_passiva", "sum"))
                     .sort_values("periodo"))
         df_mes_full = (df.groupby(["periodo"], as_index=False)
                          .agg(t=("t", "max")))
     else:
-        df_mes = pd.DataFrame(columns=["periodo", "renda_passiva", "capital_investido"])
+        df_mes = pd.DataFrame(columns=["periodo", "renda_passiva"])
         df_mes_full = pd.DataFrame(columns=["periodo", "t"])
 
     st.markdown("#### Registrar mês")
@@ -79,28 +78,30 @@ with aba_renda:
             mes_sel = st.selectbox("Mês", MESES, key="rp_mes")
         with c2:
             cat_sel = st.selectbox("Categoria", CATEGORIAS, key="rp_cat")
-            valor_investido = st.number_input(
-                "Capital investido no mês", min_value=0.0, format="%.2f",
-                key="rp_valor_investido")
-        with c3:
             provento = st.number_input(
                 "Provento recebido (FII/Ações)", min_value=0.0, format="%.2f",
                 key="rp_provento")
+        with c3:
             rendimento = st.number_input(
                 "Rendimento gerado (Renda Fixa)", min_value=0.0, format="%.2f",
                 key="rp_rendimento")
 
         if st.form_submit_button("Salvar", use_container_width=True):
             nro_mes = MESES.index(mes_sel) + 1
+            # valor_investido NAO e mais escrito por este formulario (esta pagina
+            # e de RENDA PASSIVA, nao de aporte/investimento). O ON CONFLICT so
+            # atualiza provento/rendimento, entao um valor_investido historico
+            # de algum mes antigo fica intocado — nunca mais e zerado por um
+            # submit que nem mexia nele (foi exatamente o que aconteceu em
+            # jul/2026: registrar o capital investido apagou o rendimento).
             execute(
                 "INSERT INTO renda_passiva_irmao "
-                "(ano, nro_mes, categoria, valor_investido, provento, rendimento) "
-                "VALUES (%s, %s, %s, %s, %s, %s) "
+                "(ano, nro_mes, categoria, provento, rendimento) "
+                "VALUES (%s, %s, %s, %s, %s) "
                 "ON CONFLICT (ano, nro_mes, categoria) DO UPDATE SET "
-                "valor_investido = EXCLUDED.valor_investido, "
                 "provento = EXCLUDED.provento, "
                 "rendimento = EXCLUDED.rendimento",
-                [ano_sel, nro_mes, cat_sel, valor_investido, provento, rendimento])
+                [ano_sel, nro_mes, cat_sel, provento, rendimento])
             st.success(f"Salvo: {mes_sel}/{ano_sel} — {cat_sel}")
             st.rerun()
 
@@ -139,12 +140,10 @@ with aba_renda:
         else:
             slope, intercept = 0.0, (valores[-1] if n > 0 else 0.0)
         renda_atual = valores[-1] if n > 0 else 0.0
-        capital_atual = df_mes["capital_investido"].iloc[-1] if n > 0 else 0.0
 
-        col1, col2, col3 = st.columns(3)
+        col1, col2 = st.columns(2)
         col1.metric("Renda passiva atual (último mês)", f"R$ {renda_atual:,.0f}")
         col2.metric("Tendência (R$/mês)", f"{slope:+,.2f}")
-        col3.metric("Capital investido (último mês)", f"R$ {capital_atual:,.0f}")
         st.caption("Tendência por regressão linear simples sobre o histórico disponível.")
 
         # ── Projecao por categoria (cada fonte tem natureza diferente) ────────
