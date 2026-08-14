@@ -79,3 +79,25 @@ def logout():
     """Limpa session_state e volta para tela de login."""
     st.session_state.clear()
     st.rerun()
+
+
+# household que hoje enxerga SO a Renda Passiva do Ricardo (login "ladrons").
+# Fica como constante nomeada, nao espalhada como numero magico pelo codigo.
+HOUSEHOLD_ID_RENDA_PASSIVA_ONLY = 2
+
+
+def restrito_a_renda_passiva() -> bool:
+    """
+    True quando o login logado deve ver SO a pagina de Renda Passiva do
+    Ricardo — sem Lancamentos, Dashboard, Patrimonio, Projecoes ou
+    Configuracoes, e sem a aba de Patrimonio dentro do proprio modulo Ricardo.
+
+    Checado por household_id (o unico identificador que nao muda), e nao por
+    `papel` ou `nome` do usuario — esses dois campos ja foram trocados de
+    valor nesta mesma conta numa sessao anterior (virou "Ricardo" e voltou a
+    ser "Ladrões"), entao amarrar a regra neles seria fragil.
+    """
+    try:
+        return get_current_household_id() == HOUSEHOLD_ID_RENDA_PASSIVA_ONLY
+    except RuntimeError:
+        return False

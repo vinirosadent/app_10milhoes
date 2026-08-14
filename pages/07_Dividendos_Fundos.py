@@ -17,9 +17,10 @@
 # =============================================================================
 
 import datetime as dt
+import re
 import sys
 from contextlib import contextmanager
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 import pandas as pd
@@ -193,10 +194,17 @@ def salvar_lancamento(fundo_id, ano, nro_mes, data_pagamento, unidades,
             ano = EXCLUDED.ano,
             nro_mes = EXCLUDED.nro_mes,
             dividendo = EXCLUDED.dividendo,
-            unidades = EXCLUDED.unidades,
-            taxa_distribuicao = EXCLUDED.taxa_distribuicao,
+            -- COALESCE: no modo simples do formulario, unidades/taxa/saldo
+            -- chegam como NULL porque os campos nem foram exibidos. Sem isso,
+            -- reeditar um lancamento pelo modo simples APAGARIA os detalhes
+            -- ja gravados -- exatamente o tipo de perda silenciosa que
+            -- aconteceu na pagina do Ricardo (rendimento zerado ao salvar
+            -- so o capital investido).
+            unidades = COALESCE(EXCLUDED.unidades, fundos_serie.unidades),
+            taxa_distribuicao = COALESCE(EXCLUDED.taxa_distribuicao,
+                                         fundos_serie.taxa_distribuicao),
             tipo_distribuicao = EXCLUDED.tipo_distribuicao,
-            saldo = EXCLUDED.saldo,
+            saldo = COALESCE(EXCLUDED.saldo, fundos_serie.saldo),
             atualizado_em = now()
     """
     with get_conn() as conn:
@@ -313,6 +321,19 @@ def render_lancamento_mensal(produtos):
         "da data do pagamento (o payout de 29/mai/2026 foi contabilizado em junho)."
     )
 
+    # Modo SIMPLES por padrao: a maioria dos lancamentos e so "recebi X em tal
+    # dia". Unidades e taxa por unidade so aparecem quando pedidas — elas nao
+    # entram em nenhum calculo alem de derivar o proprio dividendo, que pode
+    # ser digitado direto.
+    detalhado = st.toggle(
+        "Informar unidades e taxa por unidade",
+        value=False,
+        key="div_modo_detalhado",
+        help="Deixe desligado para lancar so o valor recebido. Ligue se quiser "
+             "registrar unidades, taxa e saldo da conta (o saldo e o que "
+             "habilita o calculo de yield).",
+    )
+
     fundos = carregar_fundos(apenas_ativos=True)
     if fundos.empty:
         st.warning("Cadastre ao menos um fundo na secao 1 antes de lancar valores.")
@@ -339,7 +360,7 @@ def render_lancamento_mensal(produtos):
                 titulo += f"  ({len(lancs)} pagamentos)"
             with st.expander(titulo, expanded=not lancs):
                 _render_pagamentos_existentes(f, lancs)
-                _render_form_fundo(f, ano, nro_mes, lancs)
+                _render_form_fundo(f, ano, nro_mes, lancs, detalhado)
 
         soma = sum(
             float(l["dividendo"])
@@ -367,90 +388,171 @@ def _render_pagamentos_existentes(fundo, lancs):
     st.divider()
 
 
-def _render_form_fundo(fundo, ano, nro_mes, lancs):
-    """Formulario de UM pagamento. Calcula o dividendo a partir de unidades x taxa.
+def parse_valor(texto, casas=2):
+    """
+    Converte o que o usuario DIGITOU em numero, sem exigir pontuacao.
 
-    Se ja existe pagamento na competencia, pre-preenche pelo mais recente. Salvar
-    com uma data DIFERENTE cria um segundo pagamento em vez de sobrescrever --
-    e o caso do MGF, que pagou em 04/mai e 29/mai de 2026.
+    Dois modos, decididos pela presenca de separador decimal:
+      - SEM separador -> os digitos sao CENTAVOS. "1230" vira 12.30, "5" vira
+        0.05. E o modo rapido: digitar 1-2-3-0 sem pensar em ponto nem apagar
+        o "0.00" que o number_input deixa no campo.
+      - COM separador -> respeita o que foi escrito. "12,30", "12.30" e
+        "1.234,56" viram 12.30, 12.30 e 1234.56. Assim quem COLA um valor do
+        extrato nao ve o numero multiplicado por 100 sem perceber.
+
+    Simbolo de moeda e espaco sao ignorados ("S$ 291.09" -> 291.09).
+    Devolve None quando o campo esta vazio ou o texto nao vira numero — nunca
+    levanta excecao, porque isso derrubaria o formulario inteiro.
+    """
+    if texto is None:
+        return None
+    s = str(texto).strip()
+    for lixo in (" ", "R$", "S$", "$"):
+        s = s.replace(lixo, "")
+    if not s:
+        return None
+    if ("," in s) or ("." in s):
+        # o ULTIMO separador e o decimal; o outro (se houver) e milhar
+        if s.rfind(",") > s.rfind("."):
+            s = s.replace(".", "").replace(",", ".")
+        else:
+            s = s.replace(",", "")
+        try:
+            return float(Decimal(s))
+        except (InvalidOperation, ValueError):
+            return None
+    digitos = re.sub(r"\D", "", s)
+    if not digitos:
+        return None
+    try:
+        return float(Decimal(digitos) / (10 ** casas))
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _fmt_campo(valor, casas=2):
+    """Valor gravado -> texto do campo. Zero/None viram campo VAZIO (nao '0.00')."""
+    if valor is None or float(valor) == 0.0:
+        return ""
+    return f"{float(valor):.{casas}f}"
+
+
+def _render_form_fundo(fundo, ano, nro_mes, lancs, detalhado=False):
+    """Formulario de UM pagamento.
+
+    Dois modos:
+      - SIMPLES (padrao): data, valor e tipo. Tres campos, que e o que a maioria
+        dos lancamentos precisa.
+      - DETALHADO: acrescenta unidades, taxa por unidade e saldo da conta. O
+        dividendo passa a ser CALCULADO (unidades x taxa) e o campo de valor
+        vira sobrescrita opcional.
+
+    O saldo da conta e o unico campo que afeta o yield; unidades e taxa servem
+    so para calcular o dividendo. Por isso o modo simples nao perde nenhum
+    calculo que o modo detalhado faria — quem nao informa saldo ja nao tinha
+    yield antes.
+
+    Se ja existe pagamento na competencia, pre-preenche pelo mais recente.
+    Salvar com uma data DIFERENTE cria um segundo pagamento em vez de
+    sobrescrever -- e o caso do MGF, que pagou em 04/mai e 29/mai de 2026.
     """
     anterior = max(lancs, key=lambda r: r["data_pagamento"]) if lancs else {}
     if lancs:
         st.caption("Para adicionar outro pagamento, mude a data antes de salvar.")
+
     with st.form(f"form_lanc_{fundo['id']}_{ano}_{nro_mes}"):
         col1, col2 = st.columns(2)
-
         data_pag = col1.date_input(
             "Data do pagamento",
             value=anterior.get("data_pagamento") or dt.date(ano, nro_mes, 1),
             key=f"data_{fundo['id']}",
         )
         tipo = col2.selectbox(
-            "Tipo de distribuicao",
+            "Tipo",
             options=["payout", "reinvestment"],
             index=0 if anterior.get("tipo_distribuicao", "payout") == "payout" else 1,
-            format_func=lambda t: "Payout (dinheiro recebido)" if t == "payout"
-            else "Reinvestment (reaplicado)",
+            format_func=lambda t: "Recebido em dinheiro" if t == "payout"
+            else "Reinvestido",
             key=f"tipo_{fundo['id']}",
         )
 
-        col3, col4 = st.columns(2)
-        unidades = col3.number_input(
-            "Fund units",
-            min_value=0.0,
-            value=float(anterior.get("unidades") or 0.0),
-            step=0.001,
-            format="%.3f",
-            key=f"unid_{fundo['id']}",
-        )
-        taxa = col4.number_input(
-            "Distribution rate (por unidade)",
-            min_value=0.0,
-            value=float(anterior.get("taxa_distribuicao") or 0.0),
-            step=0.0000001,
-            format="%.10f",
-            key=f"taxa_{fundo['id']}",
-        )
+        unidades = taxa = saldo = None
+        calculado = 0.0
 
-        calculado = calcular_dividendo(unidades, taxa)
-        col5, col6 = st.columns(2)
-        dividendo = col5.number_input(
-            "Dividendo (calculado, pode sobrescrever)",
-            min_value=0.0,
-            value=calculado if calculado > 0 else float(anterior.get("dividendo") or 0.0),
-            step=0.01,
-            format="%.2f",
+        if detalhado:
+            col3, col4 = st.columns(2)
+            unidades = parse_valor(col3.text_input(
+                "Unidades",
+                value=_fmt_campo(anterior.get("unidades"), 3),
+                placeholder="ex.: 2.425,777",
+                key=f"unid_{fundo['id']}",
+            ), casas=3)
+            taxa = parse_valor(col4.text_input(
+                "Taxa por unidade",
+                value=_fmt_campo(anterior.get("taxa_distribuicao"), 7),
+                placeholder="ex.: 0.005431",
+                key=f"taxa_{fundo['id']}",
+            ), casas=7)
+            calculado = calcular_dividendo(unidades, taxa)
+
+        col5, col6 = st.columns(2) if detalhado else (st.container(), None)
+        rotulo_valor = "Valor recebido" if not detalhado else "Dividendo (calculado, pode sobrescrever)"
+        valor_padrao = calculado if calculado > 0 else float(anterior.get("dividendo") or 0.0)
+        dividendo = parse_valor(col5.text_input(
+            rotulo_valor,
+            value=_fmt_campo(valor_padrao),
+            placeholder="digite so os numeros: 1230 = 12,30",
             key=f"div_{fundo['id']}",
-        )
-        saldo = col6.number_input(
-            "Account value (opcional, base do yield)",
-            min_value=0.0,
-            value=float(anterior.get("saldo") or 0.0),
-            step=0.01,
-            format="%.2f",
-            key=f"saldo_{fundo['id']}",
-        )
+        )) or 0.0
+
+        if detalhado:
+            # O placeholder PRECISA ter separador decimal: "25000" sem virgula
+            # e lido como centavos (250,00) e o yield sairia 100x maior, sem
+            # nenhum erro na tela. Um exemplo que contradiz a regra do parser
+            # ensina o usuario a errar.
+            saldo = parse_valor(col6.text_input(
+                "Saldo da conta (opcional, base do yield)",
+                value=_fmt_campo(anterior.get("saldo")),
+                placeholder="ex.: 25.000,00",
+                key=f"saldo_{fundo['id']}",
+            ))
 
         if calculado > 0:
             st.caption(f"unidades x taxa = {calculado:,.2f}")
-        if saldo > 0:
+        if dividendo > 0:
+            st.caption(f"Valor a gravar: **{dividendo:,.2f}**")
+        if saldo and saldo > 0:
+            # calcular_yield_anualizado devolve None para saldo <= 0, e formatar
+            # None num f-string levanta TypeError — o que derrubaria a pagina
+            # inteira. O number_input antigo era imune por causa do
+            # min_value=0.0; com text_input a guarda tem que ser explicita.
             y = calcular_yield_anualizado(dividendo, saldo)
-            st.caption(f"Yield anualizado estimado: {y:.2f}%")
+            if y is not None:
+                st.caption(f"Yield anualizado estimado: {y:.2f}%")
+        elif saldo is not None and saldo < 0:
+            st.warning("Saldo da conta nao pode ser negativo.")
 
         if st.form_submit_button("Salvar"):
-            salvar_lancamento(
-                fundo_id=int(fundo["id"]),
-                ano=ano,
-                nro_mes=nro_mes,
-                data_pagamento=data_pag,
-                unidades=unidades or None,
-                taxa_distribuicao=taxa or None,
-                dividendo=dividendo,
-                tipo_distribuicao=tipo,
-                saldo=saldo or None,
-            )
-            st.success("Lancamento salvo. Total do produto recalculado.")
-            st.rerun()
+            if dividendo <= 0:
+                st.error("Informe o valor recebido antes de salvar.")
+            else:
+                # No modo simples, unidades/taxa/saldo NAO sao enviados como
+                # None a toa: COALESCE no UPDATE preserva o que ja estava
+                # gravado, entao alternar para o modo simples nunca apaga um
+                # detalhe que voce ja tinha preenchido antes.
+                salvar_lancamento(
+                    fundo_id=int(fundo["id"]),
+                    ano=ano,
+                    nro_mes=nro_mes,
+                    data_pagamento=data_pag,
+                    unidades=unidades,
+                    taxa_distribuicao=taxa,
+                    dividendo=dividendo,
+                    tipo_distribuicao=tipo,
+                    saldo=saldo,
+                )
+                st.success("Lancamento salvo. Total do produto recalculado.")
+                st.rerun()
 
 
 def _competencia_incompleta(serie):

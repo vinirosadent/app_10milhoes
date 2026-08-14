@@ -24,6 +24,7 @@ import streamlit as st
 
 from core.db import query_df, execute
 from core.styles import aplicar_estilos
+from core.auth import restrito_a_renda_passiva
 
 st.set_page_config(page_title="Ricardo · App 10M", page_icon="👤", layout="wide")
 aplicar_estilos()
@@ -41,7 +42,14 @@ st.caption(
     "Não entra no patrimônio nem na meta dos 10M."
 )
 
-aba_renda, aba_patrimonio = st.tabs(["🌱 Renda Passiva", "📈 Patrimônio"])
+# household "Ladrões" (login do Ricardo) ve so a Renda Passiva — sem a aba de
+# Patrimonio, e sem os tabs em si (um unico tab sozinho fica estranho na UI,
+# entao usamos um container simples nesse caso).
+restrito = restrito_a_renda_passiva()
+if restrito:
+    aba_renda = st.container()
+else:
+    aba_renda, aba_patrimonio = st.tabs(["🌱 Renda Passiva", "📈 Patrimônio"])
 
 # ══════════════════════════════════════════════════════════════════════════
 # ABA 1 — RENDA PASSIVA
@@ -253,155 +261,156 @@ with aba_renda:
                 )
 
 # ══════════════════════════════════════════════════════════════════════════
-# ABA 2 — PATRIMONIO
+# ABA 2 — PATRIMONIO (oculta para login restrito, ex.: Ricardo)
 # ══════════════════════════════════════════════════════════════════════════
-with aba_patrimonio:
-    dfp = query_df(
-        "SELECT ano, nro_mes, aporte, patrimonio_final, inflacao_mensal "
-        "FROM patrimonio_irmao ORDER BY ano, nro_mes"
-    )
-
-    st.markdown("#### Registrar mês (dados reais medidos)")
-    with st.form("form_patrimonio", clear_on_submit=True):
-        c1, c2 = st.columns(2)
-        with c1:
-            ano_p = st.number_input("Ano", min_value=2020, max_value=2100,
-                                    value=2026, step=1, key="pat_ano")
-            mes_p = st.selectbox("Mês", MESES, key="pat_mes")
-            aporte_p = st.number_input(
-                "Aporte do mês (pode ser negativo se retirou)",
-                value=0.0, format="%.2f", key="pat_aporte")
-        with c2:
-            patf_p = st.number_input(
-                "Patrimônio final medido (saldo real no fim do mês)",
-                min_value=0.0, format="%.2f", key="pat_final")
-            infl_p = st.number_input(
-                "Inflação do mês (%) — ex.: 0.375 para 0,375%",
-                min_value=0.0, format="%.4f", key="pat_infl")
-
-        if st.form_submit_button("Salvar", use_container_width=True):
-            nro_mes = MESES.index(mes_p) + 1
-            execute(
-                "INSERT INTO patrimonio_irmao "
-                "(ano, nro_mes, aporte, patrimonio_final, inflacao_mensal) "
-                "VALUES (%s, %s, %s, %s, %s) "
-                "ON CONFLICT (ano, nro_mes) DO UPDATE SET "
-                "aporte = EXCLUDED.aporte, "
-                "patrimonio_final = EXCLUDED.patrimonio_final, "
-                "inflacao_mensal = EXCLUDED.inflacao_mensal",
-                [ano_p, nro_mes, aporte_p, patf_p, infl_p / 100.0])
-            st.success(f"Salvo: {mes_p}/{ano_p} — patrimônio R$ {patf_p:,.0f}")
-            st.rerun()
-
-    st.markdown("---")
-
-    if dfp.empty or len(dfp) < 2:
-        st.info("Registre pelo menos 2 meses para ver evolução e projeção.")
-        st.stop()
-
-    dfp = dfp.sort_values(["ano", "nro_mes"]).reset_index(drop=True)
-    dfp["periodo"] = pd.to_datetime(
-        dfp["ano"].astype(str) + "-" + dfp["nro_mes"].astype(str) + "-01")
-    # Juro derivado (padrao TAV): patrimonio_final - anterior - aporte
-    dfp["pat_anterior"] = dfp["patrimonio_final"].shift(1)
-    dfp["juro"] = dfp["patrimonio_final"] - dfp["pat_anterior"] - dfp["aporte"]
-    dfp.loc[0, "juro"] = 0.0
-
-    # Valor ajustado pela inflacao (metodo composto, rigoroso): divide pelo fator
-    dfp["fator_infl"] = (1 + dfp["inflacao_mensal"].fillna(0)).cumprod()
-    dfp["ajustado_composto"] = dfp["patrimonio_final"] / dfp["fator_infl"]
-
-    ultimo = dfp.iloc[-1]
-    pat_atual = float(ultimo["patrimonio_final"])
-    ajustado_atual = float(ultimo["ajustado_composto"])
-
-    st.markdown("#### Evolução do patrimônio")
-    figp = go.Figure()
-    figp.add_trace(go.Scatter(
-        x=dfp["periodo"], y=dfp["patrimonio_final"], name="Patrimônio (nominal)",
-        mode="lines+markers", line=dict(color=AZUL, width=2),
-        hovertemplate="<b>%{x|%b/%Y}</b><br>Nominal: R$ %{y:,.0f}<extra></extra>"))
-    figp.add_trace(go.Scatter(
-        x=dfp["periodo"], y=dfp["ajustado_composto"],
-        name="Ajustado pela inflação", mode="lines+markers",
-        line=dict(color=CINZA, width=2, dash="dot"),
-        hovertemplate="<b>%{x|%b/%Y}</b><br>Real: R$ %{y:,.0f}<extra></extra>"))
-    figp.update_layout(height=340, margin=dict(l=0, r=0, t=12, b=8),
-                       plot_bgcolor="white", paper_bgcolor="white",
-                       font=dict(family="Segoe UI", size=12), hovermode="x unified",
-                       legend=dict(orientation="h", y=-0.2))
-    figp.update_yaxes(gridcolor="#E0E7EF", zeroline=False)
-    figp.update_xaxes(gridcolor="rgba(0,0,0,0)")
-    st.plotly_chart(figp, use_container_width=True,
-                    config={"displayModeBar": False, "displaylogo": False})
-
-    # Premissas re-ancoradas nos dados reais
-    taxas = (dfp["juro"] / dfp["pat_anterior"]).replace([np.inf, -np.inf], np.nan).dropna()
-    taxa_media = float(taxas.mean()) if not taxas.empty else 0.0
-    infls = dfp[dfp["inflacao_mensal"] > 0]["inflacao_mensal"]
-    infl_media = float(infls.mean()) if not infls.empty else 0.0
-    aportes_norm = dfp["aporte"].iloc[1:]
-    aportes_norm = aportes_norm[aportes_norm.abs() < 15000]
-    aporte_ref = float(np.median(aportes_norm)) if not aportes_norm.empty else 0.0
-
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Patrimônio atual (nominal)", f"R$ {pat_atual:,.0f}")
-    col2.metric("Valor real (ajust. inflação)", f"R$ {ajustado_atual:,.0f}")
-    col3.metric("Retorno médio mensal", f"{taxa_media*100:.2f}%")
-
-    st.markdown("#### Projeção até R$ 1.000.000")
-    st.caption(
-        "Ancora no último mês real e projeta para frente com as médias "
-        "observadas (retorno e inflação) e um aporte de referência. À medida "
-        "que você registra novos meses reais, as premissas se atualizam e a "
-        "data se recalcula."
-    )
-
-    alvo = st.number_input("Valor-alvo (R$)", min_value=100000.0, value=1_000_000.0,
-                           step=50000.0, format="%.0f", key="pat_alvo")
-    aporte_proj = st.number_input(
-        "Aporte mensal assumido na projeção (R$)", value=round(aporte_ref, 2),
-        step=100.0, format="%.2f", key="pat_aporte_proj")
-
-    def projeta(pat0, aporte, juro_m, infl_m, metodo, alvo, gap0=0.0, limite=800):
-        ano, mes = int(ultimo["ano"]), int(ultimo["nro_mes"])
-        pat = pat0
-        fator = 1.0
-        soma = gap0
-        for _ in range(limite):
-            mes += 1
-            if mes > 12:
-                mes = 1
-                ano += 1
-            pat = (pat + aporte) * (1 + juro_m)
-            if metodo == "linear":
-                soma += pat * infl_m
-                aj = pat - soma
-            else:
-                fator *= (1 + infl_m)
-                aj = pat / fator
-            if aj >= alvo:
-                return f"{MESES[mes-1][:3]}/{ano}", ano + mes / 12.0
-        return "não atinge em 60+ anos", None
-
-    if taxa_media <= 0:
-        st.warning("Retorno médio observado não é positivo — não é possível "
-                   "projetar. Registre mais meses de dados reais.")
-    else:
-        gap_inicial = pat_atual - ajustado_atual  # desconto de inflacao ja acumulado
-        data_comp, _ = projeta(pat_atual, aporte_proj, taxa_media, infl_media,
-                                "composto", alvo)
-        data_lin, _ = projeta(pat_atual, aporte_proj, taxa_media, infl_media,
-                               "linear", alvo, gap0=gap_inicial)
-
-        cA, cB = st.columns(2)
-        cA.metric("Chega ao alvo (composto, rigoroso)", data_comp)
-        cB.metric("Chega ao alvo (linear, planilha)", data_lin)
-        st.caption(
-            f"Premissas atuais: retorno **{taxa_media*100:.2f}%/mês** "
-            f"(~{((1+taxa_media)**12-1)*100:.1f}%/ano), inflação "
-            f"**{infl_media*100:.3f}%/mês**, aporte **R$ {aporte_proj:,.0f}/mês**. "
-            "O método composto (dividir pelo fator de inflação acumulado) é o "
-            "financeiramente correto; o linear reproduz o método da sua planilha, "
-            "que subestima a inflação a longo prazo."
+if not restrito:
+    with aba_patrimonio:
+        dfp = query_df(
+            "SELECT ano, nro_mes, aporte, patrimonio_final, inflacao_mensal "
+            "FROM patrimonio_irmao ORDER BY ano, nro_mes"
         )
+
+        st.markdown("#### Registrar mês (dados reais medidos)")
+        with st.form("form_patrimonio", clear_on_submit=True):
+            c1, c2 = st.columns(2)
+            with c1:
+                ano_p = st.number_input("Ano", min_value=2020, max_value=2100,
+                                        value=2026, step=1, key="pat_ano")
+                mes_p = st.selectbox("Mês", MESES, key="pat_mes")
+                aporte_p = st.number_input(
+                    "Aporte do mês (pode ser negativo se retirou)",
+                    value=0.0, format="%.2f", key="pat_aporte")
+            with c2:
+                patf_p = st.number_input(
+                    "Patrimônio final medido (saldo real no fim do mês)",
+                    min_value=0.0, format="%.2f", key="pat_final")
+                infl_p = st.number_input(
+                    "Inflação do mês (%) — ex.: 0.375 para 0,375%",
+                    min_value=0.0, format="%.4f", key="pat_infl")
+
+            if st.form_submit_button("Salvar", use_container_width=True):
+                nro_mes = MESES.index(mes_p) + 1
+                execute(
+                    "INSERT INTO patrimonio_irmao "
+                    "(ano, nro_mes, aporte, patrimonio_final, inflacao_mensal) "
+                    "VALUES (%s, %s, %s, %s, %s) "
+                    "ON CONFLICT (ano, nro_mes) DO UPDATE SET "
+                    "aporte = EXCLUDED.aporte, "
+                    "patrimonio_final = EXCLUDED.patrimonio_final, "
+                    "inflacao_mensal = EXCLUDED.inflacao_mensal",
+                    [ano_p, nro_mes, aporte_p, patf_p, infl_p / 100.0])
+                st.success(f"Salvo: {mes_p}/{ano_p} — patrimônio R$ {patf_p:,.0f}")
+                st.rerun()
+
+        st.markdown("---")
+
+        if dfp.empty or len(dfp) < 2:
+            st.info("Registre pelo menos 2 meses para ver evolução e projeção.")
+            st.stop()
+
+        dfp = dfp.sort_values(["ano", "nro_mes"]).reset_index(drop=True)
+        dfp["periodo"] = pd.to_datetime(
+            dfp["ano"].astype(str) + "-" + dfp["nro_mes"].astype(str) + "-01")
+        # Juro derivado (padrao TAV): patrimonio_final - anterior - aporte
+        dfp["pat_anterior"] = dfp["patrimonio_final"].shift(1)
+        dfp["juro"] = dfp["patrimonio_final"] - dfp["pat_anterior"] - dfp["aporte"]
+        dfp.loc[0, "juro"] = 0.0
+
+        # Valor ajustado pela inflacao (metodo composto, rigoroso): divide pelo fator
+        dfp["fator_infl"] = (1 + dfp["inflacao_mensal"].fillna(0)).cumprod()
+        dfp["ajustado_composto"] = dfp["patrimonio_final"] / dfp["fator_infl"]
+
+        ultimo = dfp.iloc[-1]
+        pat_atual = float(ultimo["patrimonio_final"])
+        ajustado_atual = float(ultimo["ajustado_composto"])
+
+        st.markdown("#### Evolução do patrimônio")
+        figp = go.Figure()
+        figp.add_trace(go.Scatter(
+            x=dfp["periodo"], y=dfp["patrimonio_final"], name="Patrimônio (nominal)",
+            mode="lines+markers", line=dict(color=AZUL, width=2),
+            hovertemplate="<b>%{x|%b/%Y}</b><br>Nominal: R$ %{y:,.0f}<extra></extra>"))
+        figp.add_trace(go.Scatter(
+            x=dfp["periodo"], y=dfp["ajustado_composto"],
+            name="Ajustado pela inflação", mode="lines+markers",
+            line=dict(color=CINZA, width=2, dash="dot"),
+            hovertemplate="<b>%{x|%b/%Y}</b><br>Real: R$ %{y:,.0f}<extra></extra>"))
+        figp.update_layout(height=340, margin=dict(l=0, r=0, t=12, b=8),
+                           plot_bgcolor="white", paper_bgcolor="white",
+                           font=dict(family="Segoe UI", size=12), hovermode="x unified",
+                           legend=dict(orientation="h", y=-0.2))
+        figp.update_yaxes(gridcolor="#E0E7EF", zeroline=False)
+        figp.update_xaxes(gridcolor="rgba(0,0,0,0)")
+        st.plotly_chart(figp, use_container_width=True,
+                        config={"displayModeBar": False, "displaylogo": False})
+
+        # Premissas re-ancoradas nos dados reais
+        taxas = (dfp["juro"] / dfp["pat_anterior"]).replace([np.inf, -np.inf], np.nan).dropna()
+        taxa_media = float(taxas.mean()) if not taxas.empty else 0.0
+        infls = dfp[dfp["inflacao_mensal"] > 0]["inflacao_mensal"]
+        infl_media = float(infls.mean()) if not infls.empty else 0.0
+        aportes_norm = dfp["aporte"].iloc[1:]
+        aportes_norm = aportes_norm[aportes_norm.abs() < 15000]
+        aporte_ref = float(np.median(aportes_norm)) if not aportes_norm.empty else 0.0
+
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Patrimônio atual (nominal)", f"R$ {pat_atual:,.0f}")
+        col2.metric("Valor real (ajust. inflação)", f"R$ {ajustado_atual:,.0f}")
+        col3.metric("Retorno médio mensal", f"{taxa_media*100:.2f}%")
+
+        st.markdown("#### Projeção até R$ 1.000.000")
+        st.caption(
+            "Ancora no último mês real e projeta para frente com as médias "
+            "observadas (retorno e inflação) e um aporte de referência. À medida "
+            "que você registra novos meses reais, as premissas se atualizam e a "
+            "data se recalcula."
+        )
+
+        alvo = st.number_input("Valor-alvo (R$)", min_value=100000.0, value=1_000_000.0,
+                               step=50000.0, format="%.0f", key="pat_alvo")
+        aporte_proj = st.number_input(
+            "Aporte mensal assumido na projeção (R$)", value=round(aporte_ref, 2),
+            step=100.0, format="%.2f", key="pat_aporte_proj")
+
+        def projeta(pat0, aporte, juro_m, infl_m, metodo, alvo, gap0=0.0, limite=800):
+            ano, mes = int(ultimo["ano"]), int(ultimo["nro_mes"])
+            pat = pat0
+            fator = 1.0
+            soma = gap0
+            for _ in range(limite):
+                mes += 1
+                if mes > 12:
+                    mes = 1
+                    ano += 1
+                pat = (pat + aporte) * (1 + juro_m)
+                if metodo == "linear":
+                    soma += pat * infl_m
+                    aj = pat - soma
+                else:
+                    fator *= (1 + infl_m)
+                    aj = pat / fator
+                if aj >= alvo:
+                    return f"{MESES[mes-1][:3]}/{ano}", ano + mes / 12.0
+            return "não atinge em 60+ anos", None
+
+        if taxa_media <= 0:
+            st.warning("Retorno médio observado não é positivo — não é possível "
+                       "projetar. Registre mais meses de dados reais.")
+        else:
+            gap_inicial = pat_atual - ajustado_atual  # desconto de inflacao ja acumulado
+            data_comp, _ = projeta(pat_atual, aporte_proj, taxa_media, infl_media,
+                                    "composto", alvo)
+            data_lin, _ = projeta(pat_atual, aporte_proj, taxa_media, infl_media,
+                                   "linear", alvo, gap0=gap_inicial)
+
+            cA, cB = st.columns(2)
+            cA.metric("Chega ao alvo (composto, rigoroso)", data_comp)
+            cB.metric("Chega ao alvo (linear, planilha)", data_lin)
+            st.caption(
+                f"Premissas atuais: retorno **{taxa_media*100:.2f}%/mês** "
+                f"(~{((1+taxa_media)**12-1)*100:.1f}%/ano), inflação "
+                f"**{infl_media*100:.3f}%/mês**, aporte **R$ {aporte_proj:,.0f}/mês**. "
+                "O método composto (dividir pelo fator de inflação acumulado) é o "
+                "financeiramente correto; o linear reproduz o método da sua planilha, "
+                "que subestima a inflação a longo prazo."
+            )
