@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).parent))
 from login import login_page
-from core.auth import logout, restrito_a_renda_passiva
+from core.auth import logout
 from core.database import get_investimentos_ativo
 from core.styles import aplicar_estilos
 
@@ -56,21 +56,17 @@ configuracoes = st.Page("pages/03_Configuracoes.py", title="Configurações", ic
 if "investimentos_ativo" not in st.session_state:
     st.session_state["investimentos_ativo"] = get_investimentos_ativo()
 
-# household "Ladrões" (login do Ricardo) enxerga SO a pagina Ricardo — sem
-# Lancamentos, Dashboard, Patrimonio, Projecoes ou Configuracoes do household
-# do Vinicius. O corte acontece aqui, antes de qualquer pagina ser registrada
-# no st.navigation(), em vez de tentar esconder dado por dado em cada pagina.
-if restrito_a_renda_passiva():
-    paginas = [st.Page("pages/06_Ricardo.py", title="Ricardo", icon="👤", default=True)]
-else:
-    paginas = [home, lancamentos, dashboard]
-    if st.session_state["investimentos_ativo"]:
-        paginas.append(st.Page("pages/04_Investimentos.py", title="Investimentos", icon="💎"))
-        paginas.append(st.Page("pages/07_Dividendos_Fundos.py", title="Dividendos", icon="💰"))
-    paginas.append(patrimonio)
-    paginas.append(st.Page("pages/08_Projecoes.py", title="Projeções", icon="🔭"))
-    paginas.append(ricardo)
-    paginas.append(configuracoes)
+# Todo login ve as paginas do PROPRIO household — inclusive o do Ricardo, que
+# usa o app para as financas dele (lancamentos e orcamento proprios). O que
+# varia por household e so o gate de investimentos_ativo.
+paginas = [home, lancamentos, dashboard]
+if st.session_state["investimentos_ativo"]:
+    paginas.append(st.Page("pages/04_Investimentos.py", title="Investimentos", icon="💎"))
+    paginas.append(st.Page("pages/07_Dividendos_Fundos.py", title="Dividendos", icon="💰"))
+paginas.append(patrimonio)
+paginas.append(st.Page("pages/08_Projecoes.py", title="Projeções", icon="🔭"))
+paginas.append(ricardo)
+paginas.append(configuracoes)
 
 pg = st.navigation(paginas)
 pg.run()
