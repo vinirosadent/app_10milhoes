@@ -388,17 +388,22 @@ def _render_pagamentos_existentes(fundo, lancs):
     st.divider()
 
 
-def parse_valor(texto, casas=2):
+def parse_valor(texto, casas=2, centavos=True):
     """
     Converte o que o usuario DIGITOU em numero, sem exigir pontuacao.
 
-    Dois modos, decididos pela presenca de separador decimal:
-      - SEM separador -> os digitos sao CENTAVOS. "1230" vira 12.30, "5" vira
-        0.05. E o modo rapido: digitar 1-2-3-0 sem pensar em ponto nem apagar
-        o "0.00" que o number_input deixa no campo.
-      - COM separador -> respeita o que foi escrito. "12,30", "12.30" e
-        "1.234,56" viram 12.30, 12.30 e 1234.56. Assim quem COLA um valor do
-        extrato nao ve o numero multiplicado por 100 sem perceber.
+    Com separador decimal, SEMPRE respeita o que foi escrito: "12,30", "12.30"
+    e "1.234,56" viram 12.30, 12.30 e 1234.56. Assim quem COLA um valor do
+    extrato nunca ve o numero alterado.
+
+    Sem separador, o comportamento depende de `centavos`:
+      - centavos=True (padrao) -> os digitos sao CENTAVOS. "1230" vira 12.30,
+        "5" vira 0.05. E o modo rapido: digitar 1-2-3-0 sem pensar em ponto
+        nem apagar o "0.00" que o number_input deixava no campo.
+      - centavos=False -> os digitos valem LITERALMENTE. "54310" vira 54310.0.
+        Usado na taxa por unidade, onde casas=7 faria "54310" virar 0.0054310
+        silenciosamente — um valor plausivel e provavelmente errado. Melhor um
+        numero absurdo, que salta aos olhos, do que um crivel e incorreto.
 
     Simbolo de moeda e espaco sao ignorados ("S$ 291.09" -> 291.09).
     Devolve None quando o campo esta vazio ou o texto nao vira numero — nunca
@@ -425,7 +430,8 @@ def parse_valor(texto, casas=2):
     if not digitos:
         return None
     try:
-        return float(Decimal(digitos) / (10 ** casas))
+        bruto = Decimal(digitos)
+        return float(bruto / (10 ** casas) if centavos else bruto)
     except (InvalidOperation, ValueError):
         return None
 
@@ -487,12 +493,21 @@ def _render_form_fundo(fundo, ano, nro_mes, lancs, detalhado=False):
                 placeholder="ex.: 2.425,777",
                 key=f"unid_{fundo['id']}",
             ), casas=3)
+            # centavos=False: este campo e sempre COPIADO do extrato (0,005431),
+            # nunca digitado de cabeca. Com a regra dos centavos, "54310" viraria
+            # 0,0054310 — um valor plausivel e errado, que passaria batido.
             taxa = parse_valor(col4.text_input(
                 "Taxa por unidade",
                 value=_fmt_campo(anterior.get("taxa_distribuicao"), 7),
-                placeholder="ex.: 0.005431",
+                placeholder="ex.: 0,005431",
                 key=f"taxa_{fundo['id']}",
-            ), casas=7)
+            ), casas=7, centavos=False)
+            if taxa is not None and taxa >= 1:
+                st.warning(
+                    f"Taxa por unidade de {taxa:,.4f} parece alta demais — "
+                    "estes fundos distribuem centavos por unidade. "
+                    "Use o separador decimal (ex.: 0,005431)."
+                )
             calculado = calcular_dividendo(unidades, taxa)
 
         col5, col6 = st.columns(2) if detalhado else (st.container(), None)
@@ -535,6 +550,12 @@ def _render_form_fundo(fundo, ano, nro_mes, lancs, detalhado=False):
         if st.form_submit_button("Salvar"):
             if dividendo <= 0:
                 st.error("Informe o valor recebido antes de salvar.")
+            elif saldo is not None and saldo < 0:
+                # Saldo de conta negativo nao existe nestes fundos: se apareceu,
+                # e erro de digitacao. Antes o aviso era so informativo e o dado
+                # ruim entrava assim mesmo — um alerta que nao impede nada e o
+                # pior dos dois mundos.
+                st.error("Saldo da conta nao pode ser negativo. Corrija antes de salvar.")
             else:
                 # No modo simples, unidades/taxa/saldo NAO sao enviados como
                 # None a toa: COALESCE no UPDATE preserva o que ja estava
