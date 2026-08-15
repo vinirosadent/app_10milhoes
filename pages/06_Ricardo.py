@@ -159,111 +159,132 @@ with aba_renda:
         col2.metric("Tendência (R$/mês)", f"{slope:+,.2f}")
         st.caption("Tendência por regressão linear simples sobre o histórico disponível.")
 
-        # ── Projecao por categoria (cada fonte tem natureza diferente) ────────
-        # FIIs: pilar estavel/crescente -> tendencia sobre historico recente.
-        # Acoes: esporadico -> media recorrente (sem outlier), projecao flat.
-        # Renda Fixa: teve ruptura do Banco Master -> usa so meses confiaveis,
-        #   e a projecao forward parte do regime ATUAL (ultimos confiaveis).
-        # A flag "confiavel" (do banco) exclui a janela do Master dos calculos,
-        # mas o grafico acima continua mostrando todos os valores reais.
-        def _sem_outlier(v):
-            if len(v) < 4:
-                return v
-            med = np.median(v)
-            mad = np.median(np.abs(v - med))
-            if mad == 0:
-                return v
-            return v[v <= med + 3 * 1.4826 * mad]
-
+        # ── Projecao por fonte: patamar + crescimento medido ──────────────────
+        # O problema: Acoes e FIIs pagam em CICLO ANUAL. Dez/25 teve Acoes 897 e
+        # FIIs 512, contra ~200 e ~350 nos vizinhos; marco paga forte em Acoes
+        # (584 em 2025, 672 em 2026). Numa serie assim, regressao direta mede a
+        # FASE DO CICLO, nao crescimento: em Acoes a inclinacao da +1/mes em 18
+        # meses e -17/mes em 12, so mudando onde a janela corta.
+        #
+        # A solucao e a MEDIA MOVEL DE 12 MESES. Cada janela cobre um ciclo
+        # completo de distribuicao, entao a sazonalidade se cancela dentro dela
+        # e o que sobra e so crescimento. Ai basta medir o quanto essa media
+        # sobe de janela para janela:
+        #
+        #   Acoes: 231,0 -> 237,4 -> 244,7 -> 246,1 -> 259,0 -> 253,8 -> 252,4
+        #          => +3,98/mes  (mesmo com jul/26 tendo pago so 4,77)
+        #   FIIs : 283,6 -> 304,0 -> 317,6 -> 329,7 -> 342,3 -> 353,4 -> 364,5 -> 370,7
+        #          => +12,28/mes
+        #
+        # Assim o crescimento vem do DADO, sem arbitrar yield e sem projetar o
+        # aporte: o aporte esta implicito, e ele que fez a media movel subir.
+        # Medimos o resultado em vez de estimar a causa.
+        #
+        # Renda Fixa fica FLAT: so ha 5 meses confiaveis (o resto e o periodo do
+        # Banco Master) e dois deles sao a recomposicao pos-evento — a reta
+        # bruta daria +28/mes, que extrapolada viraria 616/mes em um ano sem
+        # nada que sustente. Com serie curta e sem sazonalidade, o nivel dos
+        # ultimos 3 meses ja e a melhor estimativa.
         base_t = int(df_mes_full["t"].max())  # ultimo mes real (ano*12+mes)
+        JANELA_ANUAL = 12     # Acoes e FIIs: ciclo completo de distribuicao
+        JANELA_CURTA = 3      # Renda Fixa: regime atual, sem sazonalidade
+        MIN_JANELAS = 3       # media movel precisa de ao menos 3 pontos p/ reta
 
-        def _proj_categoria(cat):
+        def _serie(cat):
             sub = df[(df["categoria"] == cat) & (df["confiavel"])].sort_values("t")
-            if sub.empty:
-                return (lambda t: 0.0), 0.0
-            v = sub["valor"].values.astype(float)
-            t = sub["t"].values.astype(float)
-            if cat == "Ações":
-                m = float(_sem_outlier(v).mean())
-                return (lambda tt: m), 0.0
+            return sub["valor"].values.astype(float)
+
+        def _nivel_e_crescimento(cat):
+            """
+            Devolve (nivel_mensal, crescimento_por_mes, n_meses_da_base).
+
+            Nivel: media dos ultimos 12 meses (ciclo anual) ou dos ultimos 3
+            (Renda Fixa, sem ciclo).
+            Crescimento: inclinacao da MEDIA MOVEL de 12 meses — zero quando nao
+            ha janelas suficientes, ou quando a fonte e Renda Fixa. Crescimento
+            negativo e truncado em zero: nao se projeta queda de renda passiva.
+            """
+            v = _serie(cat)
+            if v.size == 0:
+                return 0.0, 0.0, 0
             if cat == "Renda Fixa":
-                # regime atual: ultimos 4 meses confiaveis
-                vr = v[-4:]
-                tr = t[-4:]
-            else:  # FIIs: historico de 2026 (regime atual, estavel)
-                mask2026 = t >= 2026 * 12 + 1
-                vr = v[mask2026] if mask2026.sum() >= 2 else v
-                tr = t[mask2026] if mask2026.sum() >= 2 else t
-            if len(vr) >= 2:
-                sl, it = np.polyfit(tr, vr, 1)
-            else:
-                sl, it = 0.0, (vr[-1] if len(vr) else 0.0)
-            return (lambda tt: it + sl * tt), float(sl)
+                base = v[-JANELA_CURTA:]
+                return float(base.mean()), 0.0, len(base)
+            base = v[-JANELA_ANUAL:]
+            nivel = float(base.mean())
+            if v.size < JANELA_ANUAL + MIN_JANELAS - 1:
+                return nivel, 0.0, len(base)
+            mm = np.array([v[i - JANELA_ANUAL:i].mean()
+                           for i in range(JANELA_ANUAL, v.size + 1)])
+            sl, _ = np.polyfit(np.arange(mm.size, dtype=float), mm, 1)
+            return nivel, max(0.0, float(sl)), len(base)
 
-        f_ac, _ = _proj_categoria("Ações")
-        f_fi, sl_fi = _proj_categoria("FIIs")
-        f_rf, sl_rf = _proj_categoria("Renda Fixa")
+        n_ac, g_ac, m_ac = _nivel_e_crescimento("Ações")
+        n_fi, g_fi, m_fi = _nivel_e_crescimento("FIIs")
+        n_rf, g_rf, m_rf = _nivel_e_crescimento("Renda Fixa")
+        piso_total = n_ac + n_fi + n_rf
+        cresc_mes = g_ac + g_fi + g_rf
+        pct_ano = (cresc_mes * 12 / piso_total * 100) if piso_total else 0.0
 
-        st.markdown("#### Projeção de renda passiva (por fonte)")
+        st.markdown("#### Para onde a renda passiva está indo")
         st.caption(
-            "Cada fonte é projetada conforme sua natureza: FIIs (estável), "
-            "Ações (média recorrente, sem picos) e Renda Fixa (regime atual "
-            "pós-Banco Master). Meses atípicos marcados como não-confiáveis "
-            "ficam fora dos cálculos, mas seguem no gráfico acima."
+            "**Piso** = o que a carteira paga hoje, na média do ciclo anual de "
+            "distribuições. **Crescimento** = quanto essa média vem subindo, "
+            "medido pela média móvel de 12 meses — cada janela cobre um ciclo "
+            "inteiro, então a sazonalidade se cancela e sobra só a tendência "
+            "real. Nada de rendimento estimado: o número sai do próprio "
+            "histórico. Renda Fixa entra sem crescimento (série curta, e a alta "
+            "recente é recomposição pós-Banco Master)."
         )
-        linhas_proj = []
-        for lab, fwd in [("+3 meses", 3), ("+6 meses", 6), ("+12 meses", 12)]:
-            t = base_t + fwd
-            ac, fi, rf_ = f_ac(t), f_fi(t), f_rf(t)
-            linhas_proj.append((lab, ac, fi, rf_, ac + fi + rf_))
-
         cols = st.columns(3)
-        for c, (lab, ac, fi, rf_, tot) in zip(cols, linhas_proj):
-            c.metric(f"Renda passiva {lab}", f"R$ {tot:,.0f}",
-                     help=f"Ações ~{ac:,.0f} · FIIs ~{fi:,.0f} · Renda Fixa ~{rf_:,.0f}")
+        for c, (lab, fwd) in zip(cols, [("+3 meses", 3), ("+6 meses", 6),
+                                        ("+12 meses", 12)]):
+            valor = piso_total + cresc_mes * fwd
+            c.metric(f"Renda passiva {lab}", f"R$ {valor:,.0f}",
+                     delta=(f"+{valor - piso_total:,.0f}" if cresc_mes > 0 else None),
+                     help=f"Piso R$ {piso_total:,.0f} · "
+                          f"Ações ~{n_ac:,.0f} · FIIs ~{n_fi:,.0f} · "
+                          f"Renda Fixa ~{n_rf:,.0f}")
         st.caption(
-            f"Tendências atuais: FIIs {sl_fi:+.0f}/mês · Renda Fixa "
-            f"{sl_rf:+.0f}/mês (reconstruindo pós-Master) · Ações estável "
-            "(média recorrente)."
+            f"Piso **R$ {piso_total:,.0f}/mês** · crescimento medido "
+            f"**+R$ {cresc_mes:,.0f}/mês** ({pct_ano:,.0f}% ao ano) — "
+            f"Ações +{g_ac:,.0f} · FIIs +{g_fi:,.0f} · Renda Fixa estável. "
+            "O piso é maior que alguns meses individuais porque o ciclo anual "
+            "concentra pagamentos: julho é fraco em Ações, dezembro é forte."
         )
 
-        # ── Calculadora: quantos meses ate uma renda passiva alvo ─────────────
+        # ── Calculadora: quanto tempo ate uma renda passiva alvo ──────────────
+        # O prazo sai do crescimento MEDIDO na media movel, nao de um yield
+        # arbitrado nem de projecao de aporte. Se o crescimento medido for zero,
+        # a calculadora diz isso em vez de inventar um numero que feche a conta.
         st.markdown("#### Quanto tempo até uma renda passiva alvo?")
         meta_rp = st.number_input(
             "Renda passiva mensal alvo (R$)", min_value=0.0, value=2000.0,
             step=100.0, format="%.2f", key="rp_meta_total")
 
-        def _total_proj(t):
-            return f_ac(t) + f_fi(t) + f_rf(t)
-
-        rp_hoje = _total_proj(base_t)
-        if meta_rp <= rp_hoje:
+        if meta_rp <= piso_total:
             st.success(
-                f"Meta já atingida — a renda passiva projetada hoje é "
-                f"R$ {rp_hoje:,.0f}/mês.")
+                f"Meta já atingida — o piso atual é R$ {piso_total:,.0f}/mês.")
+        elif cresc_mes <= 0:
+            st.warning(
+                f"Faltam R$ {meta_rp - piso_total:,.0f}/mês, e no momento não há "
+                "crescimento mensurável no histórico — sem aporte novo, o "
+                "patamar não se move.")
         else:
-            achou = None
-            for k in range(1, 601):  # ate 50 anos
-                if _total_proj(base_t + k) >= meta_rp:
-                    achou = k
-                    break
-            if achou is None:
-                st.warning(
-                    "No ritmo atual, a projeção não alcança essa meta num "
-                    "horizonte razoável — as fontes tendem a estabilizar. "
-                    "Aumentar aportes (FIIs/Renda Fixa) encurtaria o prazo.")
-            else:
-                anos = achou / 12
-                val = _total_proj(base_t + achou)
-                c_meta1, c_meta2 = st.columns(2)
-                c_meta1.metric("Tempo até a meta", f"{achou} meses",
-                               help=f"~{anos:.1f} anos")
-                c_meta2.metric("Renda ao atingir", f"R$ {val:,.0f}/mês")
-                st.caption(
-                    "Projeção linear por fonte (FIIs estável, Ações média "
-                    "recorrente, Renda Fixa reconstruindo pós-Master). Novos "
-                    "aportes ou mudança de yield alteram o prazo."
-                )
+            falta = meta_rp - piso_total
+            meses = falta / cresc_mes
+            c_m1, c_m2 = st.columns(2)
+            c_m1.metric("No ritmo atual", f"{meses / 12:,.1f} anos",
+                        help=f"{meses:,.0f} meses a +R$ {cresc_mes:,.0f}/mês")
+            c_m2.metric("Faltam por mês", f"R$ {falta:,.0f}",
+                        help=f"Piso hoje R$ {piso_total:,.0f} · "
+                             f"alvo R$ {meta_rp:,.0f}")
+            st.caption(
+                f"No ritmo medido de +R$ {cresc_mes:,.0f}/mês, a meta de "
+                f"R$ {meta_rp:,.0f} chega em **{meses / 12:,.1f} anos**. "
+                "Esse ritmo é consequência dos aportes: aportar mais acelera, "
+                "parar de aportar congela o patamar onde está."
+            )
 
 # ══════════════════════════════════════════════════════════════════════════
 # ABA 2 — PATRIMONIO (oculta para login restrito, ex.: Ricardo)
