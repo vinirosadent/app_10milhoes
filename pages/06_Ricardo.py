@@ -36,19 +36,24 @@ VERDE = "#059669"
 AZUL = "#2563EB"
 CINZA = "#94A3B8"
 
-st.title("👤 Ricardo")
-st.caption(
-    "Módulo isolado (irmão) — renda passiva e patrimônio. Em R$. "
-    "Não entra no patrimônio nem na meta dos 10M."
-)
-
-# household "Ladrões" (login do Ricardo) ve so a Renda Passiva — sem a aba de
-# Patrimonio, e sem os tabs em si (um unico tab sozinho fica estranho na UI,
-# entao usamos um container simples nesse caso).
+# A MESMA pagina serve os dois lados, com cabecalho e abas diferentes:
+#   - Vinicius: "👤 Ricardo", modulo do irmao, com as duas abas.
+#   - Ricardo:  "🌱 Renda Passiva", sem citar o proprio nome (e a pagina DELE)
+#     e sem a aba de Patrimonio, que ele nao usa.
 restrito = restrito_a_renda_passiva()
+
 if restrito:
+    st.title("🌱 Renda Passiva")
+    st.caption("Proventos e rendimentos por categoria, em R$.")
+    # Um unico tab sozinho fica estranho na UI, entao aqui o conteudo vai num
+    # container simples em vez de st.tabs().
     aba_renda = st.container()
 else:
+    st.title("👤 Ricardo")
+    st.caption(
+        "Módulo isolado (irmão) — renda passiva e patrimônio. Em R$. "
+        "Não entra no patrimônio nem na meta dos 10M."
+    )
     aba_renda, aba_patrimonio = st.tabs(["🌱 Renda Passiva", "📈 Patrimônio"])
 
 # ══════════════════════════════════════════════════════════════════════════

@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).parent))
 from login import login_page
-from core.auth import logout
+from core.auth import logout, restrito_a_renda_passiva
 from core.database import get_investimentos_ativo
 from core.styles import aplicar_estilos
 
@@ -56,17 +56,30 @@ configuracoes = st.Page("pages/03_Configuracoes.py", title="Configurações", ic
 if "investimentos_ativo" not in st.session_state:
     st.session_state["investimentos_ativo"] = get_investimentos_ativo()
 
-# Todo login ve as paginas do PROPRIO household — inclusive o do Ricardo, que
-# usa o app para as financas dele (lancamentos e orcamento proprios). O que
-# varia por household e so o gate de investimentos_ativo.
-paginas = [home, lancamentos, dashboard]
-if st.session_state["investimentos_ativo"]:
-    paginas.append(st.Page("pages/04_Investimentos.py", title="Investimentos", icon="💎"))
-    paginas.append(st.Page("pages/07_Dividendos_Fundos.py", title="Dividendos", icon="💰"))
-paginas.append(patrimonio)
-paginas.append(st.Page("pages/08_Projecoes.py", title="Projeções", icon="🔭"))
-paginas.append(ricardo)
-paginas.append(configuracoes)
+# Cada login ve as paginas do PROPRIO household (o filtro household_id em cada
+# query e o que isola os dados; o menu so decide o que faz sentido mostrar).
+#
+# Household do Ricardo: ele usa o app para as financas dele (lancamentos e
+# orcamento proprios) e para acompanhar a renda passiva. Nao usa Patrimonio nem
+# Projecoes, entao essas duas saem do menu dele. A pagina 06 aparece com o nome
+# "Renda Passiva" — chamar de "Ricardo" so faz sentido do lado do Vinicius.
+if restrito_a_renda_passiva():
+    paginas = [
+        home,
+        lancamentos,
+        dashboard,
+        st.Page("pages/06_Ricardo.py", title="Renda Passiva", icon="🌱"),
+        configuracoes,
+    ]
+else:
+    paginas = [home, lancamentos, dashboard]
+    if st.session_state["investimentos_ativo"]:
+        paginas.append(st.Page("pages/04_Investimentos.py", title="Investimentos", icon="💎"))
+        paginas.append(st.Page("pages/07_Dividendos_Fundos.py", title="Dividendos", icon="💰"))
+    paginas.append(patrimonio)
+    paginas.append(st.Page("pages/08_Projecoes.py", title="Projeções", icon="🔭"))
+    paginas.append(ricardo)
+    paginas.append(configuracoes)
 
 pg = st.navigation(paginas)
 pg.run()

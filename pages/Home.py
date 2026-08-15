@@ -7,12 +7,20 @@ app.py antes de montar a navegacao).
 """
 import streamlit as st
 
+from core.auth import restrito_a_renda_passiva
+
 st.title("🐯 App dos Milhões 🐯")
 st.markdown("---")
 
 # Flag setada pelo app.py (1 query por sessao de login). .get() com default
 # False: se a Home rodar fora do fluxo normal, o card simplesmente nao aparece.
 tem_investimentos = st.session_state.get("investimentos_ativo", False)
+
+# Os cards precisam espelhar o MENU: st.switch_page so aceita paginas
+# registradas no st.navigation(), entao um atalho para pagina fora do menu
+# levanta StreamlitAPIException em vez de navegar. O household do Ricardo nao
+# tem Patrimonio no menu — no lugar dele entra o atalho de Renda Passiva.
+restrito = restrito_a_renda_passiva()
 
 colunas = st.columns(5 if tem_investimentos else 4)
 
@@ -36,10 +44,16 @@ if tem_investimentos:
             st.switch_page("pages/04_Investimentos.py")
 
 with colunas[-2]:
-    st.markdown("### 📈 Patrimonio")
-    st.write("Evolucao do patrimonio total da casa")
-    if st.button("Acessar", key="btn_pat", use_container_width=True, type="primary"):
-        st.switch_page("pages/05_Patrimonio.py")
+    if restrito:
+        st.markdown("### 🌱 Renda Passiva")
+        st.write("Proventos e rendimentos por categoria")
+        if st.button("Acessar", key="btn_rp", use_container_width=True, type="primary"):
+            st.switch_page("pages/06_Ricardo.py")
+    else:
+        st.markdown("### 📈 Patrimonio")
+        st.write("Evolucao do patrimonio total da casa")
+        if st.button("Acessar", key="btn_pat", use_container_width=True, type="primary"):
+            st.switch_page("pages/05_Patrimonio.py")
 
 with colunas[-1]:
     st.markdown("### 🔧 Configuracoes")
