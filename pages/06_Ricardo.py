@@ -147,17 +147,7 @@ with aba_renda:
                         config={"displayModeBar": False, "displaylogo": False})
 
         valores = df_mes["renda_passiva"].values.astype(float)
-        n = len(valores)
-        if n >= 3:
-            slope, intercept = np.polyfit(np.arange(n), valores, 1)
-        else:
-            slope, intercept = 0.0, (valores[-1] if n > 0 else 0.0)
-        renda_atual = valores[-1] if n > 0 else 0.0
-
-        col1, col2 = st.columns(2)
-        col1.metric("Renda passiva atual (último mês)", f"R$ {renda_atual:,.0f}")
-        col2.metric("Tendência (R$/mês)", f"{slope:+,.2f}")
-        st.caption("Tendência por regressão linear simples sobre o histórico disponível.")
+        renda_atual = float(valores[-1]) if valores.size else 0.0
 
         # ── Projecao por fonte: patamar + crescimento medido ──────────────────
         # O problema: Acoes e FIIs pagam em CICLO ANUAL. Dez/25 teve Acoes 897 e
@@ -174,7 +164,7 @@ with aba_renda:
         #   Acoes: 231,0 -> 237,4 -> 244,7 -> 246,1 -> 259,0 -> 253,8 -> 252,4
         #          => +3,98/mes  (mesmo com jul/26 tendo pago so 4,77)
         #   FIIs : 283,6 -> 304,0 -> 317,6 -> 329,7 -> 342,3 -> 353,4 -> 364,5 -> 370,7
-        #          => +12,28/mes
+        #          => +12,29/mes
         #
         # Assim o crescimento vem do DADO, sem arbitrar yield e sem projetar o
         # aporte: o aporte esta implicito, e ele que fez a media movel subir.
@@ -219,12 +209,35 @@ with aba_renda:
             sl, _ = np.polyfit(np.arange(mm.size, dtype=float), mm, 1)
             return nivel, max(0.0, float(sl)), len(base)
 
-        n_ac, g_ac, m_ac = _nivel_e_crescimento("Ações")
-        n_fi, g_fi, m_fi = _nivel_e_crescimento("FIIs")
-        n_rf, g_rf, m_rf = _nivel_e_crescimento("Renda Fixa")
+        n_ac, g_ac, _ = _nivel_e_crescimento("Ações")
+        n_fi, g_fi, _ = _nivel_e_crescimento("FIIs")
+        n_rf, g_rf, _ = _nivel_e_crescimento("Renda Fixa")
         piso_total = n_ac + n_fi + n_rf
         cresc_mes = g_ac + g_fi + g_rf
         pct_ano = (cresc_mes * 12 / piso_total * 100) if piso_total else 0.0
+
+        # Os KPIs de topo ficam AQUI, e nao antes, de proposito: assim a
+        # "Tendencia" reusa o crescimento medido pela media movel logo acima,
+        # em vez de recalcular por regressao direta. Antes eram dois numeros na
+        # mesma tela por metodos contraditorios — a regressao direta sobre a
+        # serie mensal mede a fase do ciclo (chegava a ficar NEGATIVA ao lado de
+        # um crescimento positivo), que e justamente o que este bloco corrige.
+        col1, col2 = st.columns(2)
+        # PATAMAR em destaque, mes atual no help — e nao o contrario. O numero
+        # grande e o primeiro (as vezes o unico) que se le, e o mes isolado
+        # engana nos dois sentidos por causa do ciclo anual: julho pagou 686
+        # (Acoes 4,77) e dezembro pagou 1.409. Nenhum dos dois descreve a
+        # carteira; a media do ciclo, sim.
+        col1.metric("Renda passiva (patamar do ano)", f"R$ {piso_total:,.0f}",
+                    help=f"Média do ciclo anual de distribuições. O último mês "
+                         f"fechado foi R$ {renda_atual:,.0f} — meses isolados "
+                         "oscilam bastante (dezembro e março concentram "
+                         "pagamentos, julho é fraco em Ações).")
+        col2.metric("Crescimento medido (R$/mês)", f"+{cresc_mes:,.2f}",
+                    delta=(f"{pct_ano:,.0f}% ao ano" if pct_ano else None),
+                    help="Inclinação da média móvel de 12 meses — a sazonalidade "
+                         "se cancela dentro de cada janela, então sobra só a "
+                         "tendência real.")
 
         st.markdown("#### Para onde a renda passiva está indo")
         st.caption(
