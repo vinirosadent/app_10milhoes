@@ -21,9 +21,16 @@ Decisoes de leitura que valem lembrar:
     dentro dele, ela nao depende do mercado.
   - O ritmo de aporte soma TUDO (Manulife, IBKR, DigiPortfolio, SRS), inclusive
     resgates com sinal negativo — e o fluxo liquido que importa.
-  - O fim do pagamento do apartamento (ago/2026) liberou caixa mensal. Isso so
-    vira aporte se for REDIRECIONADO, entao e um controle explicito na tela, nao
-    uma premissa escondida.
+  - O fim do pagamento do apartamento liberou caixa mensal. Isso so vira aporte
+    se for REDIRECIONADO, entao e um controle explicito na tela, nao uma
+    premissa escondida. Nao ha dupla contagem com o ritmo: o pagamento do
+    apartamento nunca passou por `lancamentos`.
+  - MEDIAS SO OLHAM MESES FECHADOS. O mes corrente tem parte dos lancamentos
+    mas ocuparia uma vaga inteira no divisor, entao a media sairia baixa e
+    subiria sozinha ao longo do mes. Ver `ultimo_mes_fechado()`.
+  - JANELA MULTIPLA DE 12. Ha sazonalidade anual forte (julho ficou acima do
+    mes tipico em 2022, 2023, 2024, 2025 e 2026). Uma janela de 18 meses
+    pegaria dois julhos dividindo por 18 e superponderaria o pico.
 """
 import streamlit as st
 import plotly.graph_objects as go
@@ -38,10 +45,10 @@ from core.auth import get_current_household_id
 from core.projecoes import (
     get_parametros, set_parametro, get_patrimonio_detalhado,
     get_categorias_faltantes, get_aportes_mensais, ritmo_aporte,
-    get_dividendos_mensais, yield_dividendos,
+    get_dividendos_mensais, yield_dividendos, ultimo_valor,
     get_esforco_por_ano, comparar_periodos,
     projetar, valor_em, meses_ate_meta, aporte_necessario,
-    meses_entre, somar_meses, formatar_prazo,
+    meses_entre, somar_meses, formatar_prazo, ultimo_mes_fechado,
 )
 
 st.set_page_config(page_title="Projeções", page_icon="🔭", layout="wide")
@@ -126,6 +133,19 @@ nao_invest   = float(ultimo["nao_investivel"])
 total_pat    = float(ultimo["total"])
 rotulo_ref   = f"{ultimo['mes']}/{ano_ref}"
 
+# ── Mes de referencia das MEDIAS (aporte e dividendo) ─────────────────────
+# O patrimonio pode estar preenchido ate o mes corrente (voce lanca o saldo do
+# dia), mas os LANCAMENTOS do mes corrente estao incompletos por definicao.
+# Usar (ano_ref, mes_ref) nas medias mistura as duas coisas: o divisor conta o
+# mes cheio e o numerador so tem os aportes ja feitos.
+# `min(ultimo_mes_fechado, ano_ref/mes_ref)` cobre os dois casos: mes corrente
+# em aberto -> recua um; patrimonio atrasado -> respeita o dado que existe.
+ano_win, mes_win = ultimo_mes_fechado()
+if meses_entre(ano_win, mes_win, ano_ref, mes_ref) < 0:
+    ano_win, mes_win = ano_ref, mes_ref
+rotulo_win = f"{charts.MESES_ABREV[mes_win-1]}/{ano_win}"
+janela_recuada = (ano_win, mes_win) != (ano_ref, mes_ref)
+
 # ── Com ou sem o apartamento ──────────────────────────────────────────────
 # Le a MESMA chave de session_state da pagina de Patrimonio (`incluir_imovel`),
 # entao as duas telas nunca discordam: o usuario decide uma vez.
@@ -134,6 +154,13 @@ rotulo_ref   = f"{ultimo['mes']}/{ano_ref}"
 # SEM imovel  -> projeta so o investivel. Responde "com quanto eu posso contar",
 #                que e a leitura correta para independencia financeira: nao da
 #                pra viver de 4% ao ano de um imovel de uso sem vende-lo.
+#
+# Este toggle e o do "valor liberado" sao INDEPENDENTES, e de proposito.
+# Patrimonio e ESTOQUE; aporte liberado e FLUXO. Desligar o imovel nao
+# "devolve" o dinheiro que o comprou para virar aporte futuro — esse dinheiro
+# ja foi gasto. Quem desliga o imovel E liga o liberado achando que um
+# compensa o outro tira 375k de estoque e recebe de volta um fluxo que leva
+# ~9 anos para reconstruir o mesmo valor.
 tem_imovel = nao_invest > 0
 if tem_imovel:
     st.toggle(
@@ -165,8 +192,8 @@ if faltantes:
 with st.container(border=True):
     st.markdown("##### Quanto eu vou investir por mês")
 
-    ritmo_12 = ritmo_aporte(df_ap, ano_ref, mes_ref, 12)
-    ritmo_24 = ritmo_aporte(df_ap, ano_ref, mes_ref, 24)
+    ritmo_12 = ritmo_aporte(df_ap, ano_win, mes_win, 12)
+    ritmo_24 = ritmo_aporte(df_ap, ano_win, mes_win, 24)
     _OPCOES = {
         "Média dos últimos 12 meses": ritmo_12,
         "Média dos últimos 24 meses": ritmo_24,
@@ -174,8 +201,10 @@ with st.container(border=True):
     }
     modo = st.radio(
         "Base do aporte", list(_OPCOES), key="proj_modo_aporte",
-        help="As duas primeiras usam o seu histórico. A terceira libera o campo "
-             "para você dizer quanto pretende investir daqui pra frente.")
+        help="As duas primeiras usam o seu histórico e terminam no último mês "
+             "fechado — o mês corrente fica de fora porque ainda não tem todos "
+             "os lançamentos. A terceira libera o campo para você dizer quanto "
+             "pretende investir daqui pra frente.")
 
     if modo == "Definir um valor":
         # O number_input com `key` ignora o `value` a partir do 2o rerun. Ao
@@ -202,9 +231,23 @@ with st.container(border=True):
         st.metric(f"Média dos últimos {janela} meses", charts.fmt_moeda(ritmo_base),
                   help="Soma de tudo que foi para investimento na janela, dividida "
                        "pela janela cheia. Mês sem aporte conta como zero.")
+        st.caption(
+            f"Janela: os {janela} meses fechados até **{rotulo_win}**."
+            + (f" {charts.MESES_ABREV[mes_ref-1]}/{ano_ref} está em aberto e "
+               "ficou de fora — entra quando o mês virar."
+               if janela_recuada else "")
+        )
 
 # ── Fontes adicionais de aporte ───────────────────────────────────────────
-div_mes = ritmo_aporte(df_div, ano_ref, mes_ref, 12, coluna="dividendo")
+# Dividendo NAO usa media: a carteira muda de patamar quando um fundo novo
+# comeca a pagar (jul/2026: o segundo fundo de cada produto Manulife entrou).
+# A media de 12 meses arrastaria meses do patamar antigo e mostraria um fluxo
+# menor do que o que existe hoje. O nivel corrente e' a informacao certa.
+div_mes, div_ano_ref, div_mes_ref = ultimo_valor(
+    df_div, coluna="dividendo", ano_ref=ano_win, mes_ref=mes_win)
+div_rotulo = (f"{charts.MESES_ABREV[div_mes_ref-1]}/{div_ano_ref}"
+              if div_mes_ref else "—")
+
 with st.container(border=True):
     st.markdown("##### Somar mais alguma coisa?")
     f1, f2 = st.columns(2)
@@ -214,8 +257,10 @@ with st.container(border=True):
         usar_lib = st.toggle(
             f"Valor liberado do apartamento ({charts.fmt_moeda(liberado_par)}/mês)",
             value=False,
-            help="O pagamento do apartamento terminou em ago/2026. Esse dinheiro "
-                 "só vira patrimônio se for redirecionado para investimento.")
+            help="Cenário, não medição: o pagamento do apartamento acabou, mas "
+                 "esse dinheiro só vira patrimônio se for REDIRECIONADO para "
+                 "investimento. Não há dupla contagem com o ritmo acima — o "
+                 "pagamento do imóvel nunca passou por lançamentos.")
         # Slider so aparece quando o toggle esta ligado: um controle desabilitado
         # ocupa espaco e sugere uma opcao que nao esta em jogo.
         pct_lib = (st.slider("Quanto dele vai para investimento", 0, 100, 100, 5,
@@ -229,8 +274,10 @@ with st.container(border=True):
         usar_div = st.toggle(
             f"Reinvestir dividendos ({charts.fmt_moeda(div_mes)}/mês)",
             value=False, disabled=div_mes <= 0,
-            help="Hoje os dividendos saem em dinheiro e não voltam para a "
-                 "carteira. Ligue para simular o efeito de reinvesti-los.")
+            help=f"Valor de {div_rotulo}, o último mês fechado com dividendo "
+                 "lançado. Usa o nível corrente e não a média, porque a "
+                 "carteira muda de patamar quando um fundo novo começa a pagar. "
+                 "Hoje esse dinheiro sai em dinheiro e não volta para a carteira.")
         pct_div = (st.slider("Quanto dos dividendos é reinvestido", 0, 100, 100, 5,
                              format="%d%%", key="proj_pct_div") / 100.0
                    if usar_div else 0.0)
@@ -315,10 +362,10 @@ with k3:
     # ValueError e devolver "S$ 0".
     charts.card_kpi("Aporte mensal projetado", aporte_mes,
                     delta=aporte_extra if aporte_extra else None,
-                    ajuda=f"Ritmo real dos últimos {janela} meses: "
-                          f"{charts.fmt_moeda(ritmo_base)}/mês. O delta, quando "
-                          "aparece, é o que você mandou somar (apartamento e/ou "
-                          "dividendos).")
+                    ajuda=f"Ritmo real dos últimos {janela} meses fechados até "
+                          f"{rotulo_win}: {charts.fmt_moeda(ritmo_base)}/mês. "
+                          "O delta, quando aparece, é o que você mandou somar "
+                          "(apartamento e/ou dividendos).")
 with k4:
     falta = max(0.0, meta - base_proj)
     charts.card_kpi("Falta para a meta", falta,
@@ -417,14 +464,14 @@ st.caption(
 
 # ── Comparador anual ──────────────────────────────────────────────────────
 st.markdown("### Estou investindo mais ou menos que antes?")
-cmp_ = comparar_periodos(df_ap, ano_ref, mes_ref)
+cmp_ = comparar_periodos(df_ap, ano_win, mes_win)
 if cmp_:
     b1, b2 = st.columns(2)
     with b1:
         with st.container(border=True):
             v = cmp_["ytd_var"]
             st.metric(
-                f"Jan–{charts.MESES_ABREV[mes_ref-1]} de {cmp_['ytd_ano']} "
+                f"Jan–{charts.MESES_ABREV[mes_win-1]} de {cmp_['ytd_ano']} "
                 f"vs {cmp_['ytd_ano_anterior']}",
                 charts.fmt_moeda(cmp_["ytd"]),
                 delta=(f"{v:+.1f}%" if v is not None else None),
@@ -460,7 +507,9 @@ if not esf.empty and esf["total"].abs().sum() > 0:
     st.caption(
         "O pagamento do apartamento era poupança, não despesa — somá-lo mostra a "
         "capacidade real de guardar dinheiro. O valor do imóvel sai do próprio "
-        "patrimônio registrado (a diferença entre dois meses é o desembolso do mês)."
+        "patrimônio registrado (a diferença entre dois meses é o desembolso do mês), "
+        "e por isso ele não aparece em lançamentos: seriam duas contagens do mesmo "
+        "dinheiro."
     )
     with st.expander("Ver tabela"):
         tab = esf.copy()

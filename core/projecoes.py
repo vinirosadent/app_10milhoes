@@ -22,12 +22,17 @@ Convencoes do modulo:
     sem vender).
   - Os parametros configuraveis (cambio, meta, taxa padrao) vivem na tabela
     `parametros`, nunca chumbados aqui.
+  - MES EM ABERTO NAO ENTRA EM MEDIA. Ver `ultimo_mes_fechado()` — o mes
+    corrente so tem parte dos lancamentos, e incluir essa fracao na janela
+    subestima o ritmo de forma que cresce ao longo do mes.
 
 Organizado em 2 blocos:
   1) PURO — matematica de projecao, sem banco e sem Streamlit. Testavel isolado.
   2) DADOS — leitura do banco (patrimonio investivel, ritmo de aporte, parametros).
 """
 from __future__ import annotations
+
+from datetime import date
 
 import pandas as pd
 
@@ -120,6 +125,30 @@ def somar_meses(ano: int, mes: int, n: int):
     """(ano, mes) + n meses -> (ano, mes). Util pra rotular o fim da projecao."""
     total = (int(ano) * 12 + (int(mes) - 1)) + int(n)
     return total // 12, total % 12 + 1
+
+
+def ultimo_mes_fechado(hoje=None):
+    """
+    (ano, mes) do ultimo mes CALENDARIO ja encerrado. Hoje e' 18/08/2026 ->
+    (2026, 7).
+
+    Por que isso existe: as medias de ritmo dividem pela janela CHEIA (ver
+    `ritmo_aporte`). Se o mes corrente entra na janela, ele contribui com os
+    poucos lancamentos ja feitos mas ocupa uma vaga inteira no divisor — a
+    media sai subestimada, e o vies ENCOLHE ao longo do mes conforme voce
+    lanca. O numero muda sozinho sem nada ter mudado na sua vida financeira.
+
+    O erro fica grave quando o mes corrente e' um dos grandes: abrir a
+    projecao em meados de julho (mes de aporte anual) contaria julho pela
+    metade e derrubaria a media em milhares.
+
+    `hoje` e' injetavel para teste.
+    """
+    d = hoje or date.today()
+    ano, mes = int(d.year), int(d.month) - 1
+    if mes == 0:
+        ano, mes = ano - 1, 12
+    return ano, mes
 
 
 def formatar_prazo(meses) -> str:
@@ -252,6 +281,12 @@ def get_aportes_mensais(household_id=None):
     IBKR, DigiPortfolio, SRS — nao so o aporte fixo). Colunas: ano, nro_mes,
     aporte, periodo. Valores negativos sao resgates/vendas e entram com o sinal
     deles, entao a soma da o fluxo LIQUIDO — que e o que interessa pro ritmo.
+
+    NAO inclui o pagamento do apartamento: ele nunca passou por `lancamentos`.
+    Quem soma o imovel ao esforco de poupanca e' get_esforco_por_ano(), que
+    deriva o desembolso do delta da serie de patrimonio da categoria
+    nao-investivel. Sao dois caminhos deliberadamente separados — lancar o
+    apartamento aqui tambem duplicaria o valor naquele grafico.
     """
     hh = _hh(household_id)
     df = query_df(
@@ -275,6 +310,16 @@ def ritmo_aporte(df_aportes, ano_ref: int, mes_ref: int, meses: int = 12,
     sem aporte e' um mes de ritmo zero, nao um mes inexistente. Ignorar isso
     inflaria o ritmo de quem aporta esporadicamente.
 
+    Passe SEMPRE um (ano_ref, mes_ref) de mes fechado — ver
+    `ultimo_mes_fechado()`. Um mes em aberto ocupa uma vaga cheia no divisor
+    com uma fracao dos lancamentos.
+
+    A janela deve ser MULTIPLA DE 12 quando ha sazonalidade anual (aporte de
+    bonus, 13o). Uma janela de 18 meses pega dois julhos e divide por 18: da
+    ao mes sazonal peso 2/18 em vez de 1/12, superponderando o pico em 33% —
+    e o vies troca de sinal conforme o mes em que a pagina e' aberta. E o
+    mesmo motivo pelo qual varejo compara "12 meses contra 12 meses".
+
     `coluna` permite reusar a mesma janela para dividendos (coluna 'dividendo').
     """
     if df_aportes is None or df_aportes.empty or coluna not in df_aportes.columns:
@@ -284,6 +329,34 @@ def ritmo_aporte(df_aportes, ano_ref: int, mes_ref: int, meses: int = 12,
     ym = df_aportes["ano"].astype(int) * 12 + (df_aportes["nro_mes"].astype(int) - 1)
     sel = df_aportes[(ym >= ym_ini) & (ym <= ym_fim)]
     return float(sel[coluna].sum()) / float(meses) if meses else 0.0
+
+
+def ultimo_valor(df, coluna: str = "dividendo", ano_ref=None, mes_ref=None):
+    """
+    Valor do mes mais recente COM DADO, ate (ano_ref, mes_ref) inclusive.
+    Devolve (valor, ano, mes); (0.0, None, None) se nao houver nada.
+
+    Usado para o dividendo. Media de 12 meses e' errada aqui porque a carteira
+    MUDA de patamar: quando um fundo novo comeca a pagar, o dividendo salta e
+    fica no patamar novo — a media arrasta meses do patamar antigo e subestima
+    o fluxo que existe hoje. Para aporte a media faz sentido (suaviza
+    irregularidade); para dividendo o que importa e' o nivel corrente.
+
+    Combine com `ultimo_mes_fechado()` no `ano_ref`: um mes em aberto pode ter
+    so parte dos fundos creditada e apareceria como queda.
+    """
+    if df is None or df.empty or coluna not in df.columns:
+        return 0.0, None, None
+    d = df
+    if ano_ref is not None and mes_ref is not None:
+        ym_lim = int(ano_ref) * 12 + (int(mes_ref) - 1)
+        ym = d["ano"].astype(int) * 12 + (d["nro_mes"].astype(int) - 1)
+        d = d[ym <= ym_lim]
+    if d.empty:
+        return 0.0, None, None
+    d = d.sort_values(["ano", "nro_mes"])
+    linha = d.iloc[-1]
+    return float(linha[coluna]), int(linha["ano"]), int(linha["nro_mes"])
 
 
 def get_dividendos_mensais(household_id=None):
@@ -336,6 +409,10 @@ def get_esforco_por_ano(household_id=None):
 
     Isso responde "qual o meu potencial real de poupanca": em anos em que o
     imovel comeu a maior parte, o aporte financeiro sozinho subestima muito.
+
+    ESTA e' a unica fonte do apartamento no app. Nao criar lancamentos
+    retroativos do imovel em `lancamentos`: eles entrariam em `financeiro` sem
+    sair de `imovel`, e o total dobraria.
 
     Colunas: ano, financeiro, imovel, total.
     """
