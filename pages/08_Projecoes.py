@@ -237,6 +237,18 @@ with st.container(border=True):
                "ficou de fora — entra quando o mês virar."
                if janela_recuada else "")
         )
+        # A janela de 24m atravessa a quebra de regime de dez/2025 (parou de
+        # enviar dinheiro ao Brasil para o apartamento). Metade dela e' de um
+        # regime que nao existe mais, entao ela puxa a media para baixo sem que
+        # isso represente o ritmo atual. Avisar e' mais honesto do que esconder
+        # a opcao: o usuario pode querer justamente a leitura conservadora.
+        if janela == 24:
+            st.caption(
+                ":orange[**Atenção:** esta janela atravessa dez/2025, quando o "
+                "padrão de aporte mudou. Metade dela é de um regime que não "
+                "existe mais, então ela tende a subestimar o ritmo atual. "
+                "A de 12 meses reflete melhor o momento.]"
+            )
 
 # ── Fontes adicionais de aporte ───────────────────────────────────────────
 # Dividendo NAO usa media: a carteira muda de patamar quando um fundo novo
@@ -247,6 +259,14 @@ div_mes, div_ano_ref, div_mes_ref = ultimo_valor(
     df_div, coluna="dividendo", ano_ref=ano_win, mes_ref=mes_win)
 div_rotulo = (f"{charts.MESES_ABREV[div_mes_ref-1]}/{div_ano_ref}"
               if div_mes_ref else "—")
+
+# Quantos meses o ultimo dividendo lancado esta atras da janela. ultimo_valor
+# devolve o mes mais recente COM DADO, entao um mes sem lancamento faz o valor
+# "voltar" ao anterior em vez de zerar — comportamento correto (o fluxo nao
+# acabou, so nao foi lancado), mas silencioso. Sem este aviso, um dado de meses
+# atras seguiria alimentando a projecao como se fosse corrente.
+div_atraso = (meses_entre(div_ano_ref, div_mes_ref, ano_win, mes_win)
+              if div_mes_ref else None)
 
 with st.container(border=True):
     st.markdown("##### Somar mais alguma coisa?")
@@ -281,6 +301,12 @@ with st.container(border=True):
         pct_div = (st.slider("Quanto dos dividendos é reinvestido", 0, 100, 100, 5,
                              format="%d%%", key="proj_pct_div") / 100.0
                    if usar_div else 0.0)
+        if div_atraso is not None and div_atraso >= 2:
+            st.caption(
+                f":orange[**Dado defasado:** o último dividendo lançado é de "
+                f"{div_rotulo}, {div_atraso} meses atrás. Lance os meses "
+                "faltantes em Investimentos para a projeção usar o valor atual.]"
+            )
 
 aporte_extra_apto = liberado_par * pct_lib if usar_lib else 0.0
 aporte_extra_div  = div_mes * pct_div if usar_div else 0.0
