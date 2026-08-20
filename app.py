@@ -78,6 +78,11 @@ else:
         paginas.append(st.Page("pages/07_Dividendos_Fundos.py", title="Dividendos", icon="💰"))
     paginas.append(patrimonio)
     paginas.append(st.Page("pages/08_Projecoes.py", title="Projeções", icon="🔭"))
+    # Reconciliacao so faz sentido com o modulo de investimentos ligado: ela
+    # compara o patrimonio digitado com o que aporte+rendimento reconstroem, e
+    # sem investimentos nao ha o segundo lado da conta.
+    if st.session_state["investimentos_ativo"]:
+        paginas.append(st.Page("pages/09_Reconciliacao.py", title="Reconciliação", icon="🧮"))
     paginas.append(ricardo)
     paginas.append(configuracoes)
 
