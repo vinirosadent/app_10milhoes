@@ -72,6 +72,13 @@ def _sgd0(valor: float) -> str:
     return f"S$ {valor:,.0f}"
 
 
+def _ym_texto(ym) -> str:
+    """Formata a chave inteira AAAAMM como MM/AAAA. Devolve travessao se None."""
+    if not ym:
+        return "—"
+    return f"{ym % 100:02d}/{ym // 100}"
+
+
 def _mes_texto(d: date) -> str:
     meses = ["jan", "fev", "mar", "abr", "mai", "jun",
              "jul", "ago", "set", "out", "nov", "dez"]
@@ -138,7 +145,7 @@ col1.metric(
     ),
 )
 col2.metric(
-    "Capacidade de investimento",
+    "Média investida por mês",
     _sgd0(cap["capacidade"]) + " /mês",
     help=(
         f"Média de {cap['n_meses']} meses fechados ({cap['janela_texto']}) dos "
@@ -148,7 +155,7 @@ col2.metric(
 
 st.caption(
     f"Patrimônio de {base['mes_ref_texto']} · capacidade medida em {cap['janela_texto']} "
-    f"· retorno assumido de {retorno_anual:.1%} ao ano · hoje = {hoje.strftime('%d/%m/%Y')} (SGT)"
+    f"· hoje = {hoje.strftime('%d/%m/%Y')} (SGT)"
 )
 
 with st.expander("Como a capacidade mensal é calculada"):
@@ -156,9 +163,11 @@ with st.expander("Como a capacidade mensal é calculada"):
         f"""
 | Parcela | Valor | Origem |
 |---|---:|---|
-| Aportes (exceto SRS) | {_sgd(cap['media_aportes'])} | média de {cap['n_lancamentos']} lançamentos em {cap['n_meses']} meses ({cap['janela_texto']}) |
+| Aportes lançados no app | {_sgd(cap['media_aportes'])} | média de {cap['n_lancamentos']} lançamentos em {cap['n_meses']} meses |
 | SRS | {_sgd(cap['srs_mensal'])} | teto anual {_sgd0(cap['srs_teto_anual'])} ÷ 12 |
-| **Capacidade** | **{_sgd(cap['capacidade'])}** | soma das duas linhas |
+| Apartamento | {_sgd(cap['apto_liberado'])} | {_sgd(cap['apto_mensal_cheio'])}/mês em {cap['meses_com_fluxo']} dos {cap['n_meses']} meses |
+| XP | {_sgd(cap['xp_liberado'])} | {_sgd(cap['xp_mensal_cheio'])}/mês em {cap['meses_com_fluxo']} dos {cap['n_meses']} meses |
+| **Média investida** | **{_sgd(cap['capacidade'])}** | soma das quatro linhas |
 """
     )
     st.markdown(
@@ -167,6 +176,21 @@ O SRS **sai da média e entra pelo teto** porque é constante conhecida — o te
 contribuído todo ano. Isso torna a fórmula imune a como o lançamento foi
 registrado no banco, e há registros inconsistentes (contribuição ora distribuída
 em 12 parcelas, ora lançada em bloco num mês só).
+
+As duas últimas linhas são o que você investia **fora do app**: aportes ao
+apartamento e à XP, que saíam da renda de Singapura. Eram investimento, apenas
+não passavam por `lançamentos` — por isso precisam ser somados aqui para a média
+descrever o total de fato investido.
+
+Elas entram **só nos meses em que existiram** ({cap['meses_com_fluxo']} dos {cap['n_meses']} da
+janela, até {_ym_texto(cap.get('fluxos_brasil_fim'))}), não em todos. É por isso que a média cai
+naturalmente conforme a janela avança: no regime antigo você investia cerca de
+S$ 18 mil/mês; no atual, cerca de S$ 13 mil. A média de 24 meses está no meio da
+transição, e vai convergir sozinha para o regime novo.
+
+Não confundir com a quitação do saldo devedor (R$ 400.000 transferidos da XP
+entre abr e jul/2026): aquilo moveu patrimônio que já existia de um lugar para
+outro, não foi investimento novo.
 
 A janela é sempre múltiplo de 12 meses, para conter exatamente uma ocorrência do
 bônus de julho por ano — que é capacidade real e recorrente, não outlier a
@@ -205,6 +229,21 @@ meta = st.slider(
         "virada de elegibilidade do SRS (hoje ~1,62M a ~1,67M) ficaria inalcançável."
     ),
 )
+
+retorno_anual = st.slider(
+    "Retorno anual assumido",
+    min_value=0.0,
+    max_value=10.0,
+    value=float(retorno_anual * 100),
+    step=0.5,
+    format="%.1f%%",
+    help=(
+        f"O valor gravado no banco (`retorno_padrao`) é {retorno_anual:.1%} ao ano. "
+        "Mover o slider não altera o banco. Num horizonte de poucos anos o aporte "
+        "mensal pesa mais que o retorno composto, então a data se move menos do que "
+        "a intuição sugere — mas a premissa fica visível e testável."
+    ),
+) / 100.0
 
 taxa_m = taxa_mensal(retorno_anual)
 resultado = resolver_meta_com_srs(
@@ -302,8 +341,10 @@ with st.expander("Procedência dos números e premissas"):
 Apartamento excluído (D-03).
 
 **Capacidade** — {_sgd(cap['media_aportes'])} de média
-({cap['n_lancamentos']} lançamentos, {cap['janela_texto']})
-mais {_sgd(cap['srs_mensal'])} de SRS pelo teto.
+({cap['n_lancamentos']} lançamentos, {cap['janela_texto']}),
+mais {_sgd(cap['srs_mensal'])} de SRS pelo teto,
+mais {_sgd(cap['liberado_total'])} de aportes feitos fora do app
+(apartamento e XP, presentes em {cap['meses_com_fluxo']} dos {cap['n_meses']} meses).
 Total da janela: {_sgd(cap['total_janela'])}.
 
 **SRS** — primeira contribuição em
@@ -330,7 +371,19 @@ a {base['fator_pos']:.2f}:
 - Aporte constante, no fim de cada mês, sem reajuste por inflação ou promoção.
 - Retorno constante e determinístico — não há cenários nem intervalo de confiança.
 - Dividendos não entram como linha separada (estão embutidos no retorno assumido).
-- O apartamento não aparece: foi quitado em maio/2026 e o imóvel é estoque em BRL.
+- O **imóvel** não entra no patrimônio (estoque em BRL, D-03), mas a **parcela
+  mensal** que deixou de sair entra na capacidade — são coisas diferentes.
+- A capacidade é a **média histórica do total investido**, incluindo o que ia
+  para o apartamento e para a XP. Não há premissa sobre o futuro: se você
+  investir menos, a média cai sozinha na próxima janela.
+- A janela cobre dois regimes (com e sem os aportes ao Brasil), então a média
+  fica entre os dois. Isso é transição, não erro — ela converge conforme 2026
+  e 2027 dominarem a janela.
+- Os valores de apartamento e XP dependem do câmbio (`fx_brl_sgd`): foram
+  convertidos de BRL. Se o real oscilar, revisar os parâmetros.
+- Vêm de um diagrama de fluxo fornecido, não de extrato bancário. A série
+  patrimonial do imóvel **não** serve como fonte: é interpolada, e o valor
+  derivado dela superestimava o fluxo em 21%.
 - A data da primeira contribuição do SRS (e portanto a elegibilidade) vem de
   lançamentos **reconstruídos**, não de extrato bancário. Confirmar antes de
   tomar decisão de saque com base nisso.

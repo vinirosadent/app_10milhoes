@@ -27,6 +27,8 @@ Formula da capacidade mensal (decisao D-01, revisada em 23/08/2026):
     capacidade = media(24 meses fechados, lancamentos de Investimento
                        cujo item NAO comeca com 'SRS')
                + teto anual do SRS / 12
+               + fluxo do apartamento liberado
+               + fluxo da XP liberado
 
 O SRS sai da media e entra pelo teto porque e constante conhecida (o
 Vinicius contribui o teto todo ano), nao algo a estimar. Isso torna a
@@ -36,8 +38,32 @@ parcelas, ora lancada em bloco num mes so). O filtro e ESTRUTURAL
 (item NOT ILIKE 'SRS%%'), nao lista de nomes: conta SRS nova entra na
 regra sozinha, sem cadastro em lugar nenhum.
 
-NAO ha linha de "parcela do apartamento liberada": o financiamento foi
-quitado em maio/2026 com resgate da XP (Brasil). Nao e evento futuro.
+As duas ultimas parcelas sao os FLUXOS PARA O BRASIL: dinheiro que saia da
+renda de Singapura e TAMBEM era investimento, so que fora do app.
+
+    apto_liberado_mensal -> 3.273,81 SGD/mes (aportes ANUAIS de R$ 157.142,86
+                            ao apartamento, 2019-2025, mensalizados: /12 e
+                            convertidos pelo cambio)
+    xp_liberado_mensal   -> 1.500,00 SGD/mes (R$ 6.000/mes para a XP,
+                            jan/2024 a dez/2025)
+
+PONTO CRITICO: esses valores entram APENAS nos meses da janela em que os
+fluxos existiam, ate `fluxos_brasil_fim` (dez/2025) - nao em todos os 24. Isso
+NAO e premissa sobre o futuro: e a media historica do que foi de fato
+investido, somando o que estava fora do app.
+
+Consequencia direta: a media CAI sozinha conforme a janela avanca sobre o
+regime novo. Na janela ago/2024-jul/2026, 17 meses tem os fluxos e 7 nao tem;
+a media (16.610) fica entre o regime antigo (17.984) e o novo (13.274). Quando
+2026 dominar a janela, ela converge para o regime novo sem ninguem mexer em
+nada.
+
+Nenhum dos dois foi lancado em `lancamentos` (nao existe categoria de imovel
+nem da XP), entao somar NAO e dupla contagem.
+
+Nao confundir com a QUITACAO do saldo devedor (R$ 400.000 transferidos da XP
+entre abr e jul/2026): aquilo foi consumo de ESTOQUE (patrimonio que ja
+existia) e nao e investimento novo.
 """
 
 from __future__ import annotations
@@ -98,9 +124,8 @@ def get_parametros(household_id: int | None = None) -> dict:
     valor e o campo numerico quando existe e o texto caso contrario.
 
     Chaves relevantes pra projecao: meta_patrimonio, meta_data,
-    retorno_padrao, srs_teto_anual, srs_primeira_contribuicao.
-    (apto_liberado_mensal existe mas esta marcado OBSOLETO no banco -
-    nao usar.)
+    retorno_padrao, srs_teto_anual, srs_primeira_contribuicao,
+    apto_liberado_mensal, xp_liberado_mensal, fluxos_brasil_fim.
     """
     hh = _hh(household_id)
     df = query_df(
@@ -202,12 +227,18 @@ def get_capacidade_mensal(
     do modulo. A janela termina no ultimo mes FECHADO (se hoje e
     23/ago/2026, agosto ainda corre, entao a janela termina em jul/2026).
 
-    Devolve as duas parcelas SEPARADAS, mais a procedencia de cada uma,
+    Devolve as quatro parcelas SEPARADAS, mais a procedencia de cada uma,
     porque a tela mostra as linhas separadamente (D-07):
 
         media_aportes  -> media dos lancamentos nao-SRS na janela
         srs_mensal     -> teto anual do SRS / 12
-        capacidade     -> soma das duas
+        apto_liberado  -> contribuicao MEDIA do fluxo do apartamento na
+                          janela (valor mensal x meses ativos / n_meses)
+        xp_liberado    -> idem para a XP
+        capacidade     -> soma das quatro
+
+    Os dois ultimos NAO sao o valor mensal cheio: sao a media diluida sobre a
+    janela inteira, ja que os fluxos existiram so ate `fluxos_brasil_fim`.
 
     Levanta ValueError se n_meses nao for multiplo de 12 (D-04).
     """
@@ -244,10 +275,47 @@ def get_capacidade_mensal(
     teto = 0.0 if _vazio(teto_bruto) else float(teto_bruto)
     srs_mensal = teto / 12.0
 
+    # Fluxos que saiam da renda de Singapura para o Brasil (apartamento e XP).
+    # Eram investimento, so que fora do app: nao existem em `lancamentos`.
+    # Entram APENAS nos meses da janela em que existiram, ate
+    # `fluxos_brasil_fim`. Por isso sao diluidos sobre os n_meses da janela -
+    # e o que faz a media cair sozinha conforme a janela avanca.
+    apto_bruto = params.get("apto_liberado_mensal")
+    apto_mensal = 0.0 if _vazio(apto_bruto) else float(apto_bruto)
+
+    xp_bruto = params.get("xp_liberado_mensal")
+    xp_mensal = 0.0 if _vazio(xp_bruto) else float(xp_bruto)
+
+    fim_texto = params.get("fluxos_brasil_fim")
+    if _vazio(fim_texto) or not str(fim_texto).strip():
+        meses_ativos = 0
+        ym_fluxos_fim = None
+    else:
+        fa, fm = _parse_ano_mes(fim_texto)
+        ym_fluxos_fim = _ym(fa, fm)
+        # meses da janela que sao <= o fim dos fluxos
+        meses_ativos = 0
+        cursor = ini
+        for _ in range(n_meses):
+            if _ym(cursor.year, cursor.month) <= ym_fluxos_fim:
+                meses_ativos += 1
+            cursor = somar_meses(cursor, 1)
+
+    apto_liberado = apto_mensal * meses_ativos / n_meses
+    xp_liberado = xp_mensal * meses_ativos / n_meses
+
     return {
         "media_aportes": media,
         "srs_mensal": srs_mensal,
-        "capacidade": media + srs_mensal,
+        "apto_liberado": apto_liberado,
+        "xp_liberado": xp_liberado,
+        "liberado_total": apto_liberado + xp_liberado,
+        "capacidade": media + srs_mensal + apto_liberado + xp_liberado,
+        # procedencia dos fluxos
+        "apto_mensal_cheio": apto_mensal,
+        "xp_mensal_cheio": xp_mensal,
+        "meses_com_fluxo": meses_ativos,
+        "fluxos_brasil_fim": ym_fluxos_fim,
         # procedencia
         "janela_ini": ym_ini,
         "janela_fim": ym_fim,
